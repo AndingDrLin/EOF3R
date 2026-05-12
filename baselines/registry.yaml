@@ -1,0 +1,52 @@
+# EOF3R Baseline Registry
+# Records all external open-source code used as baselines or dependencies.
+#
+# Each entry:
+#   name:       Short identifier used in code (e.g., "3dgs", "vggt")
+#   url:        Git repository URL
+#   branch:     Branch cloned
+#   commit:     Exact commit hash checked out
+#   clone_date: When it was cloned (YYYY-MM-DD)
+#   env:        Conda environment name (if separate from main)
+#   notes:      Why we chose this baseline, what it's used for
+#   patched:    Whether we applied a patch from baselines/patches/
+
+baselines:
+  # --- Foreground: 3D Gaussian Splatting ---
+  # - name: gaussian-splatting
+  #   url: https://github.com/graphdeco-inria/gaussian-splatting
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r-3dgs
+  #   notes: Original 3DGS. Used for foreground object reconstruction.
+  #   patched: false
+
+  # --- Background: Feedforward Reconstruction ---
+  # - name: vggt
+  #   url: https://github.com/facebookresearch/vggt
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r-vggt
+  #   notes: Feedforward 3D reconstruction. Used for background reconstruction.
+  #   patched: false
+
+  # - name: dust3r
+  #   url: https://github.com/naver/dust3r
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r-dust3r
+  #   notes: Fallback option for background reconstruction.
+  #   patched: false
+
+  # --- Segmentation ---
+  # - name: sam2
+  #   url: https://github.com/facebookresearch/sam2
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r
+  #   notes: Segment Anything Model 2. Used for foreground object segmentation.
+  #   patched: false

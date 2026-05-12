@@ -1,0 +1,29 @@
+# EOF3R 最小依赖骨架
+# 具体版本号在环境验证后锁定
+
+# 深度学习
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 3D 相关
+plyfile
+open3d
+trimesh
+numpy
+scipy
+
+# 图像处理
+opencv-python
+pillow
+
+# 配置管理
+pyyaml
+omegaconf
+
+# 日志与实验追踪
+tensorboard
+wandb
+
+# 工具
+tqdm
+rich

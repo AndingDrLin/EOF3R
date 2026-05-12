@@ -1,0 +1,44 @@
+# EOF3R Plot Style Configuration
+# Unified color scheme and style settings for all paper figures.
+# Use this via src/utils/plotting.py to ensure visual consistency.
+
+# Color palette for up to 6 methods (ordered by preference)
+palette:
+  - "#1f77b4"   # blue     → Ours / Proposed
+  - "#ff7f0e"   # orange   → 3DGS (full scene)
+  - "#2ca02c"   # green    → VGGT (full scene)
+  - "#d62728"   # red      → DUSt3R (full scene)
+  - "#9467bd"   # purple   → Ablation
+  - "#8c564b"   # brown    → Extra
+
+# Line styles for different baselines
+linestyles:
+  proposed: "-"
+  full_3dgs: "--"
+  full_vggt: "-."
+  full_dust3r: ":"
+
+# Font & size
+font:
+  family: DejaVu Sans
+  title_size: 14
+  label_size: 12
+  tick_size: 10
+  legend_size: 10
+
+# Figure defaults
+figure:
+  dpi: 300
+  format: pdf          # pdf for LaTeX, png for quick preview
+  width_inches: 6.4    # single column
+  height_inches: 4.8
+  transparent: false
+
+# Metric-specific axis labels
+metrics:
+  psnr: "PSNR (dB)"
+  ssim: "SSIM"
+  lpips: "LPIPS ↓"
+  chamfer: "Chamfer Distance (m) ↓"
+  f_score: "F-Score ↑"
+  time: "Time (s) ↓"

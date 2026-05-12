@@ -1,0 +1,77 @@
+# Claude
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data & outputs (large files, not version controlled)
+data/
+outputs/
+
+# Baselines — ignore all external code, track only manifest and patches
+baselines/*
+!baselines/registry.yaml
+!baselines/patches/
+
+# Thesis writing drafts (private until submission)
+thesis/writing/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs & experiment tracking
+*.log
+wandb/
+
+# Model weights & checkpoints (anywhere)
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.pkl
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# Media outputs
+*.mp4
+*.avi
+*.gif
+*.webm
+
+# Linter/formatter caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Python version
+.python-version

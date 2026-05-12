@@ -1,0 +1,46 @@
+# EOF3R 默认配置
+# 具体实验可 override 以下字段
+
+experiment_name: default
+seed: 42
+
+data:
+  dataset: null           # scannet / replica / custom
+  data_root: null         # 通过环境变量设置
+  scene_list: []          # 场景名列表，空表示全部
+  image_size: [640, 480]
+  num_views: null         # 使用的视图数，null = 全部
+
+segmentation:
+  method: sam2            # sam2 / yolo / gt
+  model_size: base        # tiny / small / base / large
+  min_mask_area: 500      # 最小 mask 面积（像素）
+  foreground_classes: []  # 指定前景类别，空 = 自动检测
+
+foreground:
+  method: 3dgs            # 3dgs / mvsplat
+  iterations: 7000
+  densify_until_iter: 5000
+  lr:
+    position: 0.00016
+    scaling: 0.005
+    rotation: 0.001
+    opacity: 0.05
+    feature: 0.0025
+
+background:
+  method: vggt            # vggt / dust3r / colmap
+  max_resolution: 512     # feedforward 模型最大输入分辨率
+
+fusion:
+  alignment: same_coords  # same_coords / icp / feature
+  blending: alpha         # alpha / depth / simple_overlay
+
+demo:
+  mode: object_localization  # object_localization / scene_understanding / navigation
+  visualize: true
+  output_format: json
+
+evaluation:
+  metrics: [psnr, ssim, chamfer, f_score]
+  baseline_methods: [full_3dgs, full_vggt]

@@ -36,9 +36,20 @@ figure:
 
 # Metric-specific axis labels
 metrics:
+  # 3D reconstruction
   psnr: "PSNR (dB)"
   ssim: "SSIM"
   lpips: "LPIPS ↓"
   chamfer: "Chamfer Distance (m) ↓"
   f_score: "F-Score ↑"
   time: "Time (s) ↓"
+  # Navigation
+  path_length: "Path Length (m) ↓"
+  stop_count: "Unnecessary Stops (count) ↓"
+  path_smoothness: "Path Smoothness (rad/m) ↓"
+  min_clearance: "Min Clearance (m) ↑"
+  time_to_goal: "Time to Goal (s) ↓"
+  detour_ratio: "Detour Ratio ↓"
+  footprint_iou: "Footprint IoU ↑"
+  latency_p50: "Cloud Latency p50 (ms) ↓"
+  latency_p95: "Cloud Latency p95 (ms) ↓"

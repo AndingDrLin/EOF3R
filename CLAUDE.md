@@ -8,7 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **EOF3R** — Efficient Object-level Feedforward 3D Reconstruction with 3D Gaussian Splatting.
 
-本科毕业设计原型系统。将场景分解为前景物体（3DGS 精细重建）+ 背景区域（feedforward 模型快速重建）→ 融合为统一 3D 场景 → autonomous perception demo。
+本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。将场景分解为前景物体（feedforward 3DGS 快速精细重建）+ 背景区域（3R 模型粗重建）→ 融合 → BEV 语义占据代价地图 → ROS2 Nav2 局部路径规划增强。
+
+**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端负责高算力异步推理（SAM2 分割细化 / 3R 背景重建 / FF 3DGS 物体重建 / 语义 costmap 生成）。云端结果是 planning enhancement，不直接控制车辆。
 
 ### 语言铁律
 
@@ -39,8 +41,12 @@ EOF3R/
 │
 ├── docs/                           # Project documentation (中文)
 │   ├── project_scope.md
+│   ├── project_audit.md             # Diagnostic: current state vs new direction
 │   ├── roadmap.md
 │   ├── lit_review.md
+│   ├── experiments.md               # Navigation experiment designs
+│   ├── engineering.md               # Three-phase engineering plan
+│   ├── risks.md                     # Risk register with mitigations
 │   ├── standards.md
 │   └── todo.md
 │
@@ -54,24 +60,28 @@ EOF3R/
 │   ├── default.yaml                # Default config — all experiments inherit from this
 │   ├── plot_style.yaml             # Unified plotting style for paper figures
 │   ├── data/                       # Dataset-specific configs
-│   └── model/                      # Model-specific hyperparameter configs
+│   ├── model/                      # Model-specific hyperparameter configs
+│   ├── robot/                      # Husky/Nav2 parameter configs
+│   └── cloud/                      # Cloud server configs
 │
 ├── baselines/                      # External open-source code (gitignored)
 │   ├── registry.yaml               # Manifest: URL, commit, env per baseline
 │   └── patches/                    # Patches applied on top of upstream baselines
 │
 ├── scripts/                        # Standalone scripts (runnable, not importable)
-│   ├── download_data.sh
 │   ├── preprocess/
-│   └── eval/
+│   ├── eval/
+│   └── robot/                       # Husky launch/ROS2 config scripts
 │
 ├── src/                            # Core source code (importable Python package)
 │   ├── __init__.py
 │   ├── segmentation/               # Scene decomposition (SAM2 / YOLO wrapper)
-│   ├── foreground/                 # Object-level 3DGS reconstruction
-│   ├── background/                 # Feedforward background reconstruction (VGGT/DUSt3R wrapper)
-│   ├── fusion/                     # Foreground-background fusion (core research)
-│   ├── demo/                       # Autonomous perception demo
+│   ├── foreground/                 # Object-level feedforward 3DGS reconstruction
+│   ├── background/                 # 3R background reconstruction (VGGT/DUSt3R/MASt3R)
+│   ├── fusion/                     # Coordinate alignment + BEV projection
+│   ├── costmap/                    # BEV semantic occupancy costmap generation
+│   ├── communication/              # Vehicle-cloud async communication layer
+│   ├── demo/                       # ROS2 navigation demo (Husky robot)
 │   └── utils/                      # Shared utilities (IO, visualization, metrics)
 │
 ├── data/                           # NOT version-controlled
@@ -152,8 +162,10 @@ Every dataset must be registered with: name, version, source URL, download date,
 
 ### Dataset Selection
 
-- **Primary**: ScanNet++ (real indoor, camera poses included)
+- **Primary (3D reconstruction)**: ScanNet++ (real indoor, camera poses included)
+- **Primary (navigation)**: Campus rosbag (Husky self-collected, at least 3 scenarios)
 - **Backup**: Replica (synthetic, clean)
+- **Simulation**: Gazebo / Isaac Sim (for system integration testing)
 - **Custom**: Self-captured data + COLMAP calibration
 
 ### Rules
@@ -239,8 +251,10 @@ All methods in the same comparison use the same random seed and data split.
 
 ### Coordinate System
 
-- **Right-handed, Y-up**, unit: **meters**.
-- This is the OpenGL convention. If a baseline uses a different convention, document and convert at the wrapper boundary.
+- **3D Reconstruction**: **Right-handed, Y-up**, unit: **meters**. OpenGL convention.
+- **BEV / Robot**: **X-forward, Y-left, Z-up**, unit: **meters**. ROS convention.
+- The conversion from Y-up (reconstruction) to Z-up (BEV) happens at the fusion→costmap boundary.
+- If a baseline uses a different convention, document and convert at the wrapper boundary.
 
 ### Camera Model
 
@@ -368,6 +382,13 @@ thesis/
 - Every experiment must log GPU model and CUDA version.
 - If a method requires more VRAM, document it and provide a downsampled alternative.
 
+### Vehicle-Side Environment
+
+- The Husky onboard computer (Jetson or x86) runs ROS2 Humble with its own environment.
+- Vehicle-side code uses `rclpy` and standard ROS2 Python packages, installed via apt.
+- The GPU training environment (`eof3r`) and vehicle environment are separate — do not mix them.
+- Vehicle-side scripts live in `scripts/robot/` and communicate with cloud via HTTP/gRPC (not ROS2 cross-network).
+
 ---
 
 ## §11 Reproducibility
@@ -398,9 +419,13 @@ thesis/
 | Document | Purpose |
 |----------|---------|
 | `docs/project_scope.md` | What this project does (and does NOT do) |
-| `docs/roadmap.md` | 7-stage technical roadmap |
-| `docs/lit_review.md` | Literature survey with reading checklist |
+| `docs/project_audit.md` | Diagnostic: current state vs new direction |
+| `docs/roadmap.md` | 8-stage technical roadmap |
+| `docs/lit_review.md` | Literature survey with reading checklist (12 directions) |
+| `docs/experiments.md` | Navigation experiment designs (3 scenarios) |
+| `docs/engineering.md` | Three-phase engineering plan |
+| `docs/risks.md` | Risk register with mitigations and fallback paths |
 | `docs/standards.md` | Supplementary detail for some standards |
 | `docs/todo.md` | Task checklist, updated weekly |
-| `configs/default.yaml` | Default configuration |
+| `configs/default.yaml` | Default configuration (full pipeline + robot + cloud) |
 | `baselines/registry.yaml` | External baseline manifest |

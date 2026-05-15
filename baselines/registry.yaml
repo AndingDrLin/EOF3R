@@ -41,6 +41,26 @@ baselines:
   #   notes: Fallback option for background reconstruction.
   #   patched: false
 
+  # --- Feedforward 3DGS ---
+  # - name: mvsplat
+  #   url: https://github.com/donydchen/mvsplat
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r-mvsplat
+  #   notes: Feedforward 3DGS via cost volume. Primary choice for foreground object reconstruction (no per-scene training needed).
+  #   patched: false
+
+  # --- Enhanced 3R Models ---
+  # - name: mast3r
+  #   url: https://github.com/naver/mast3r
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: eof3r-mast3r
+  #   notes: DUSt3R + feature matching. Enhanced option for background reconstruction and pose estimation.
+  #   patched: false
+
   # --- Segmentation ---
   # - name: sam2
   #   url: https://github.com/facebookresearch/sam2
@@ -49,4 +69,24 @@ baselines:
   #   clone_date: null
   #   env: eof3r
   #   notes: Segment Anything Model 2. Used for foreground object segmentation.
+  #   patched: false
+
+  # --- ROS2 Navigation (reference, not cloned as baseline) ---
+  # - name: navigation2
+  #   url: https://github.com/ros-navigation/navigation2
+  #   branch: humble
+  #   commit: null
+  #   clone_date: null
+  #   env: null (installed via apt)
+  #   notes: ROS2 Nav2 stack. Used as-is via apt install ros-humble-navigation2. Custom costmap layer plugin references its headers.
+  #   patched: false
+
+  # --- Cloud Robotics (reference only) ---
+  # - name: fogros2
+  #   url: https://github.com/BerkeleyAutomation/FogROS2
+  #   branch: main
+  #   commit: null
+  #   clone_date: null
+  #   env: null
+  #   notes: Reference architecture for ROS2 cloud robotics. Not necessarily used directly — implements a simpler custom bridge.
   #   patched: false

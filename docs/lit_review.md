@@ -14,6 +14,11 @@
   - 代码：`github.com/graphdeco-inria/gaussian-splatting`
   - 对应本项目：前景物体精细重建的基础
 
+**参考**：
+- [ ] Mip-Splatting (CVPR 2024) — 抗锯齿
+- [ ] Scaffold-GS (CVPR 2024) — 结构化 anchor
+- [ ] 2D Gaussian Splatting (SIGGRAPH 2024) — 表面建模
+
 ### B. Object-level / Efficient 3DGS
 
 要回答的问题：
@@ -25,8 +30,9 @@
 - [ ] ObjectGS (Zhu et al., ICCV 2025) — object-aware anchors + semantic IDs
 - [ ] Gaussian Object Carver (arXiv 2412.02075) — object-compositional GS + surface completion
 - [ ] GS-Octree (CGF/Eurographics 2024) — octree SDF + GS
+- [ ] GES (CVPR 2024) — Generalized Exponential Splatting
 
-### C. Feedforward 3D Reconstruction
+### C. Feedforward 3D Reconstruction（3R 模型）
 
 要回答的问题：
 - DUSt3R → MASt3R → VGGT 演进路径？
@@ -37,6 +43,7 @@
 - [ ] Zhang et al., "Review of Feed-forward 3D Reconstruction: From DUSt3R to VGGT", arXiv 2507.08448 — **先读这篇**
 - [ ] VGGT (Wang et al., CVPR 2025) — 代码：`github.com/facebookresearch/vggt`
 - [ ] DUSt3R (CVPR 2024)
+- [ ] MASt3R (CVPR 2025) — DUSt3R + feature matching
 
 **参考资源**：
 - [All-3R-SLAM-in-this-Repo](https://github.com/3D-Vision-World/All-3R-SLAM-in-this-Repo)
@@ -69,9 +76,9 @@
 ### F. Autonomous Perception Demo
 
 要回答的问题：
-- 现有 demo 使用什么 sensor 输入？
 - 3D 重建在 perception pipeline 中的角色？
 - demo 的最小可用形式是什么？
+- 已有系统如何评估感知质量？
 
 **阅读/参考清单**：
 - [ ] EA3D (Extract Anything 3D, arXiv 2510.25146) — 在线 3D 物体提取
@@ -81,19 +88,138 @@
 
 ---
 
+### G. Feedforward / Sparse-View 3DGS
+
+与本项目的关系：传统 3DGS 需要 7000+ 次迭代训练，不适合"看几秒就要用"的机器人场景。Feedforward 3DGS 可以在单次前向传播中预测 Gaussian 参数，使 object-level 重建在秒级完成。
+
+要回答的问题：
+- 哪些 feedforward 3DGS 方法开源且可复现？
+- 在 2-4 个视角输入下，几何精度能达到什么水平？
+- 是否支持物体级（而非全场景）重建？
+- 输出格式是否易转换为 BEV footprint？
+
+**阅读清单**：
+- [ ] MVSplat (Chen et al., ECCV 2024) — cost-volume based, multiple dataset support
+- [ ] pixelSplat (Charatan et al., CVPR 2024) — epipolar transformer
+- [ ] latentSplat (Wysocki et al., CVPR 2025) — latent diffusion prior
+- [ ] Splatter-Image (Szymanowicz et al., CVPR 2024) — single-view 3DGS prediction
+- [ ] Flash3DGS (2025) — real-time feedforward 3DGS
+
+**关注重点**：MVSplat（多视角、开源、精度较好）和 Splatter-Image（单视图，最极端少视角情况）。
+
+### H. Semantic 3DGS / Feature Distillation
+
+与本项目的关系：每个前景物体的 Gaussians 需要继承语义信息（类别、实例 ID、风险等级）。主要方式有两种：feature field distillation（从 2D 特征图提升到 3D）和 per-Gaussian semantic label。
+
+要回答的问题：
+- 如何将 2D 语义特征高效地附加到 3DGS 上？
+- 附加语义是否显著增加计算开销？
+- 语义特征在少视角条件下是否仍然可靠？
+
+**阅读清单**：
+- [ ] LangSplat (Qin et al., CVPR 2024) — CLIP feature field in 3DGS
+- [ ] LEGaussians (Shi et al., ECCV 2024) — language embedded 3DGS
+- [ ] Feature-3DGS (Zhou et al., 2024) — feature field distillation
+- [ ] OpenGaussian (Wu et al., NeurIPS 2024) — open-vocabulary 3DGS
+
+**注意**：本项目第一阶段不要求 open-vocabulary。先用预定义类别（人、自行车、路锥、纸箱等），语义从 2D detector 继承到 3D Gaussian 组。Semantic feature field 是扩展方向，不是主线。
+
+### I. BEV Occupancy & Costmap Generation
+
+与本项目的关系：BEV 占据代价地图是连接 3D 感知和路径规划的桥梁。需要理解如何将 3D Gaussian 表示转换为 2D 占据网格。
+
+要回答的问题：
+- 从 3D 点云/Gaussians 到 BEV 占据网格的投影方法有哪些？
+- 语义占据网格（semantic occupancy）的数据格式和标准？
+- 如何生成 ROS2 Nav2 costmap_2d 兼容的 layer？
+- 如何设置膨胀参数（inflation）使其既安全又不过度保守？
+
+**阅读/调研清单**：
+- [ ] BEVDet / BEVFormer 系列 — BEV 特征生成方法（参考，不一定直接用）
+- [ ] Occ3D / OpenOccupancy — 3D 占据数据集和评估
+- [ ] SurroundOcc (ICCV 2023) — 多相机 semantic occupancy
+- [ ] Nav2 costmap_2d 官方文档 — layered costmap, inflation, obstacle/voxel layers
+- [ ] Nav2 costmap plugin 开发文档 — 自定义 layer 的 API
+
+**重点关注**：Nav2 costmap_2d 的 plugin 接口，以及如何将 3DGS 投影到 2D 网格（高度阈值过滤 + 俯视投影）。
+
+### J. ROS2 Nav2 Local Planning
+
+与本项目的关系：Nav2 局部规划器是本项目的"下游消费者"。云端生成的 costmap 最终要通过 Nav2 的 local planner 影响路径。
+
+要回答的问题：
+- Nav2 local planner（DWB, TEB, RPP）各自的原理和参数？
+- 如何在 Nav2 中叠加自定义 costmap layer？
+- Nav2 如何处理多 source 的 costmap（融合策略）？
+- 局部规划器的速度限制和急停机制？
+
+**阅读/调研清单**：
+- [ ] Nav2 官方文档 — architecture overview, costmap_2d, planner/controller servers
+- [ ] DWB (Dynamic Window Approach) 论文和 Nav2 实现
+- [ ] TEB (Timed Elastic Band) 论文和 Nav2 实现
+- [ ] Regulated Pure Pursuit (RPP) — Nav2 默认 controller
+- [ ] ROS2 Navigation2 GitHub（`github.com/ros-navigation/navigation2`）
+
+**重点关注**：Nav2 的 layered costmap 架构和自定义 layer plugin 的开发方式。
+
+### K. Edge-Cloud Robotics & Async Perception
+
+与本项目的关系：车端-云端异步架构是系统的核心设计。需要理解已有的云端机器人框架和延迟处理方法。
+
+要回答的问题：
+- 现有的云端机器人通信框架（FogROS2, Rapyuta）提供了什么？
+- 延迟 >1s 的感知信息对机器人控制还有什么用？
+- 如何设计"异步增强"而非"同步依赖"的系统？
+
+**阅读/调研清单**：
+- [ ] FogROS2 (Berkeley, 2023) — ROS2 cloud robotics framework
+- [ ] Rapyuta (ETH Zurich) — cloud robotics platform
+- [ ] ROS2 topic bridge over WAN — 跨网络 ROS2 通信方案
+- [ ] Cloud robotics latency characterization papers — 延迟对控制的影响分析
+
+**注意**：本项目不要求使用完整的 FogROS2/Rapyuta 框架（太重）。重点是理解异步通信的 design pattern，然后实现一个简单够用的版本。
+
+### L. Campus / Last-Mile Delivery Perception
+
+与本项目的关系：理解校园配送机器人的实际感知需求和已有系统的做法。
+
+要回答的问题：
+- 现有校园配送机器人（Starship, Nuro, 美团, 京东）使用什么感知方案？
+- 它们的避障策略和局限性是什么？
+- 低速近场场景的特殊挑战是什么？
+
+**阅读/调研清单**：
+- [ ] Starship Technologies — campus delivery robot 公开资料
+- [ ] Nuro — last-mile autonomous delivery 技术报告
+- [ ] 美团无人配送 — 国内校园/园区方案
+- [ ] 京东物流机器人 — 园区配送感知方案
+
+---
+
 ## Baseline 选择（待调研后确认）
 
-| 模块 | 候选 | 状态 |
-|------|------|------|
-| 前景分割 | SAM2 / YOLO+SAM2 | 待确定 |
-| 前景重建 | 3DGS / MVSplat | 待确定 |
-| 背景重建 | VGGT / DUSt3R | 待确定 |
-| 融合策略 | 自行设计（参考 Unbounded-GS / HybridGS） | 待设计 |
+| 模块 | 优先方案 | Fallback | 状态 |
+|------|----------|----------|------|
+| 前景分割 | SAM2 (box prompt) | YOLOv8 + SAM2 | 待确定 |
+| 前景重建 | MVSplat (feedforward) | 3DGS per-object optimization | 待确定 |
+| 背景重建 | VGGT / MASt3R | DUSt3R | 待确定 |
+| 融合与 BEV 投影 | 自行设计 | — | 待设计 |
+| Costmap 生成 | Nav2 costmap_2d custom plugin | — | 待开发 |
+| 车-云通信 | 自行设计（HTTP/gRPC + ROS2 topic） | FogROS2 参考 | 待设计 |
+| 局部规划 | Nav2 RPP / DWB | — | 待配置 |
+| 机器人平台 | Husky (ROS2 Humble) | Gazebo simulation | 待确定 |
 
-## 前 5 篇优先阅读顺序
+---
 
-1. Kerbl et al., "3D Gaussian Splatting", SIGGRAPH 2023
-2. Zhang et al., "Review of Feed-forward 3D Reconstruction", arXiv 2025
-3. Wang et al., "VGGT", CVPR 2025
-4. Zhu et al., "ObjectGS", ICCV 2025
-5. Kirillov et al., "SAM 2", 2024
+## 前 10 篇优先阅读顺序
+
+1. Zhang et al., "Review of Feed-forward 3D Reconstruction", arXiv 2025 — **先读，建框架**
+2. Kerbl et al., "3D Gaussian Splatting", SIGGRAPH 2023 — 基础
+3. Wang et al., "VGGT", CVPR 2025 — 背景重建首选
+4. MVSplat (Chen et al., ECCV 2024) — 前景重建首选
+5. Kirillov et al., "SAM 2", 2024 — 分割基础
+6. ObjectGS (Zhu et al., ICCV 2025) — object-level GS
+7. Nav2 官方文档 — costmap_2d + local planner
+8. LangSplat (Qin et al., CVPR 2024) — semantic 3DGS 参考
+9. BEVDet / Occ3D — BEV 占据表示（参考思路）
+10. FogROS2 — 云端机器人通信（参考架构）

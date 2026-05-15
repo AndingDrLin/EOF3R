@@ -1,48 +1,236 @@
 # 技术路线
 
-## Stage 0：项目初始化（第 1 周）
+> 8 阶段路线，总计约 16 周。Stage 0 已完成。Stage 3-4 可并行。
 
-- 目录结构 + 文档 + 环境配置
-- 输出：README、docs/、.gitignore、conda 环境
+---
 
-## Stage 1：文献调研（第 2-4 周）
+## Stage 0：项目初始化（第 1 周）✅ 已完成
 
-- 6 个方向：3DGS 基础、Object-level 3DGS、Feedforward 3D Recon、场景分割、混合表示、Autonomous Demo
-- 输出：lit_review.md 完整索引 + lit_notes/ 下每篇笔记
-- 确定每个模块的 baseline 选择
+- [x] 目录结构与项目骨架
+- [x] CLAUDE.md（项目宪法）
+- [x] docs/（project_scope, roadmap, lit_review, standards, todo）
+- [x] configs/default.yaml、plot_style.yaml
+- [x] baselines/registry.yaml
+- [x] pyproject.toml（ruff 配置）
+- [x] .pre-commit-config.yaml
+- [x] .gitignore
+- [ ] 创建 conda 环境 `eof3r` 并安装依赖（待完成）
+- [ ] 验证环境可运行（`import torch, open3d` 等）
+
+---
+
+## Stage 1：文献调研与基线选定（第 2-5 周）
+
+### 调研方向（12 个）
+
+- A. 3DGS 基础（3DGS, Mip-Splatting, Scaffold-GS, 2DGS）
+- B. Object-level 3DGS（ObjectGS, GES, Gaussian Grouping）
+- C. Feedforward 3D 重建（VGGT, DUSt3R, MASt3R, Spann3R）
+- D. 场景分割（SAM, SAM2, YOLO-world）
+- E. 混合 3D 场景表示（Unbounded-GS, HybridGS）
+- F. Autonomous Perception Demo（参考实现）
+- **G. Feedforward / Sparse-View 3DGS**（MVSplat, pixelSplat, latentSplat, Flash3DGS）
+- **H. Semantic 3DGS**（LangSplat, LEGaussians, Feature-3DGS, OpenGaussian）
+- **I. BEV Occupancy & Costmap**（BEVDet, Occ3D, Nav2 costmap_2d）
+- **J. ROS2 Nav2 Local Planning**（DWB, TEB, RPP, costmap plugins）
+- **K. Edge-Cloud Robotics**（FogROS2, Rapyuta, cloud latency handling）
+- **L. Campus/Last-Mile Delivery Perception**（Starship, Nuro, 美团无人配送）
+
+### 产出
+
+- [ ] 更新 `docs/lit_review.md`（完整论文索引）
+- [ ] `lit_notes/` 下至少 12 篇核心论文的阅读笔记
+- [ ] 确定每个模块的 baseline 选择（优先 feedforward 方案）
+- [ ] 更新 `baselines/registry.yaml`
+
+---
 
 ## Stage 2：数据准备与场景分解（第 5-7 周）
 
-- 数据集：ScanNet++（优先）/ Replica / 自拍
-- 前景分割：SAM2（自动模式或 box prompt）
-- 输出：前景 mask + 背景 mask
+### 数据
 
-## Stage 3：前景 3DGS 重建（第 8-10 周）
+- **参考数据**：ScanNet++（室内，有 pose，用于重建精度验证）
+- **目标数据**：校园 Husky rosbag（自采集，至少 3 个场景）
+- **仿真数据**（可选）：Gazebo / Isaac Sim 合成场景
 
-- 每个前景物体独立训练 3DGS
-- 输入：物体多视图 + mask + 相机参数
-- 输出：物体高斯球表示（.ply）
+### 场景分解
 
-## Stage 4：背景 Feedforward 重建（第 9-11 周）
+- [ ] 确认 SAM2 在目标场景上的分割质量
+- [ ] 前景 mask 提取（box prompt 或 automatic mode）
+- [ ] 背景 mask 生成（inpaint 前景区域）
+- [ ] 物体 crop 提取（从多帧中裁剪前景物体区域）
+- [ ] rosbag 格式解析与关键帧提取脚本
+- [ ] 数据预处理 pipeline（`scripts/preprocess/`）
 
-- VGGT（优先）/ DUSt3R 快速重建背景
-- 输入：场景全图 + masked 背景图
-- 输出：背景 3D 点云
+### 产出
 
-## Stage 5：前景-背景融合（第 11-13 周）
+- [ ] 至少 3 个场景的预处理数据（前景 masks + 物体 crops + 背景 masks + 相机信息）
+- [ ] 数据处理脚本
 
-- 坐标系对齐（same_coords / ICP）
-- 渲染融合（alpha blending / depth composite）
-- 输出：统一可渲染场景
+---
 
-## Stage 6：Autonomous Demo（第 13-15 周）
+## Stage 3：前景 Object-level 3DGS 重建（第 7-10 周）
 
-- 物体定位 demo（推荐）
-- Open3D 或简单 Web 可视化
-- 输出：可运行 demo 脚本
+> 与 Stage 4 可部分并行（第 8-10 周重叠）
 
-## Stage 7：Evaluation & 报告（第 14-16 周）
+### 优先路线：Feedforward 3DGS
 
-- PSNR/SSIM（2D 渲染）/ Chamfer Distance（3D）
-- Baseline：纯 3DGS、纯 VGGT
-- 输出：定量表格 + 可视化对比 + 论文初稿
+- [ ] 搭建 MVSplat 或类似 feedforward 模型
+- [ ] 输入：物体多视图 crops（2-4 个视角）+ masks + 相对相机位姿
+- [ ] 输出：物体 Gaussian 参数（.ply）+ 3D 中心 + 尺寸 + 朝向 + BEV footprint
+- [ ] 评估 3D 几何精度（Chamfer, F-Score），与 GT mesh 对比
+
+### Fallback 路线：Per-Object 优化 3DGS
+
+- [ ] 如果 feedforward 质量不够，回退到每个物体独立训练 3DGS
+- [ ] 仍比全场景训练快（单个物体 + 少量迭代）
+
+### 产出
+
+- [ ] 前景物体重建模块（`src/foreground/`）
+- [ ] 物体级 Gaussian 输出（.ply + metadata json）
+- [ ] 3D 几何精度评估脚本
+
+---
+
+## Stage 4：背景 3R 粗重建（第 8-10 周）
+
+> 与 Stage 3 可部分并行
+
+### 路线
+
+- [ ] 搭建 VGGT / MASt3R 推理 pipeline
+- [ ] 输入：场景全图（或背景-masked 图）
+- [ ] 输出：dense pointmap + 相机位姿 + 地面平面估计 + 可通行区域 mask
+- [ ] 坐标系统一到项目约定（右手 Y-up）
+- [ ] Fallback: DUSt3R（如果 VGGT/MASt3R 有问题）
+
+### 产出
+
+- [ ] 背景重建模块（`src/background/`）
+- [ ] 背景点云 + 地面网格 + 相机轨迹
+
+---
+
+## Stage 5：融合与 BEV 代价地图生成（第 10-12 周）
+
+### 路线
+
+- [ ] 前景-背景坐标对齐（利用 Stage 4 的相机位姿）
+- [ ] Object Gaussian → BEV 占据网格投影算法
+- [ ] 语义/风险层级生成（类别 → 风险等级 → 膨胀半径）
+- [ ] Nav2 costmap layer 格式输出（costmap_2d plugin 接口）
+- [ ] 可视化：BEV 代价地图叠加原始图像验证
+
+### 产出
+
+- [ ] 融合模块（`src/fusion/`）
+- [ ] Costmap 生成模块（`src/costmap/`）
+- [ ] Nav2 costmap layer plugin
+
+---
+
+## Stage 6：车-云异步架构（第 11-13 周）
+
+> 与 Stage 5 可部分并行
+
+### 车端
+
+- [ ] ROS2 本地安全节点（急停、速度限制、心跳）
+- [ ] 关键帧选择与上传节点（异步，非阻塞）
+- [ ] Costmap patch 接收与融合节点
+- [ ] Latency 监测与超时丢弃逻辑
+
+### 云端
+
+- [ ] 推理服务器（HTTP 或 gRPC）
+- [ ] 异步任务队列（接收关键帧 → 调用 Stage 2-5 pipeline → 返回 costmap patch）
+- [ ] 超时和错误处理
+
+### 通信
+
+- [ ] 通信协议定义（关键帧格式、costmap patch 格式）
+- [ ] 降级逻辑：延迟 >3s 丢弃、通信中断降级为本地避障、恢复后自动重连
+
+### 产出
+
+- [ ] 通信模块（`src/communication/`）
+- [ ] Demo 模块更新（`src/demo/` → ROS2 节点）
+- [ ] 系统降级测试
+
+---
+
+## Stage 7：实验验证与消融（第 13-15 周）
+
+### 三个导航实验场景
+
+1. **窄通道 + 不规则障碍物**（自行车斜放、电动车侧倒、纸箱堆叠）
+2. **低矮/不规则障碍物**（倒地自行车、路沿、低障碍栏、压扁纸箱）
+3. **行人/自行车低速交互**（行人慢速横穿、自行车低速经过）
+
+### 实验设计
+
+- [ ] 每个场景 5 次重复，交替运行 baseline 和 enhanced
+- [ ] Baseline：Nav2 local planner + 纯 LiDAR obstacle layer
+- [ ] Enhanced：Nav2 local planner + LiDAR + 云端 costmap 增强层
+- [ ] 消融：costmap 去掉语义层、costmap 去掉物体形状层
+
+### 评估指标
+
+- **安全性**：collision / near-collision count
+- **效率**：time to goal, path length
+- **质量**：path smoothness (integrated curvature), unnecessary stop count, minimum clearance
+- **感知精度**：footprint estimation error, costmap IoU
+- **系统**：latency (mean, p95, max), cloud timeout rate
+
+### 产出
+
+- [ ] 实验日志（`experiments/`）
+- [ ] 定量结果表 + 路径可视化对比图
+- [ ] 消融分析
+
+---
+
+## Stage 8：论文写作与答辩（第 14-16 周）
+
+- [ ] 论文初稿（中文）
+- [ ] 定量结果表与可视化图（≥300 DPI）
+- [ ] 系统架构图
+- [ ] Demo 视频录制
+- [ ] 答辩 PPT
+
+---
+
+## 时间线总览
+
+```
+Week:  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
+Stage 0: ██
+Stage 1:    ████████████
+Stage 2:                ████████████
+Stage 3:                      ████████████████
+Stage 4:                      ████████████████
+Stage 5:                                  ████████████
+Stage 6:                                    ████████████
+Stage 7:                                              ████████████
+Stage 8:                                                ████████████
+```
+
+- Stage 3 和 Stage 4 可并行（都用 Stage 2 的输出，互不依赖）
+- Stage 5 依赖 Stage 3+4
+- Stage 6 可与 Stage 5 并行（通信模块可以用 mock 数据先开发）
+- Stage 7 依赖 Stage 5+6 的模块就绪
+- Stage 8 与 Stage 7 有重叠（实验跑起来就可以开始写论文）
+
+---
+
+## 与旧路线的主要变化
+
+| 旧 | 新 | 变化原因 |
+|----|-----|----------|
+| 7 阶段 | 8 阶段 | 加了车-云架构阶段 |
+| Stage 3: per-object 3DGS 训练 | Stage 3: feedforward 3DGS 优先 | 速度需求 |
+| Stage 6: Open3D 可视化 demo | Stage 6: 车-云异步架构 | 真实机器人场景 |
+| 评估只有 PSNR/SSIM/Chamfer | 加导航指标（path quality 等） | 核心贡献变了 |
+| 数据只有 ScanNet++/Replica | 加 campus rosbag + Gazebo | 需要机器人场景 |
+| 融出是 rendering | 融合输出是 BEV costmap | 目标变了 |

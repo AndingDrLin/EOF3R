@@ -4,23 +4,31 @@
 experiment_name: default
 seed: 42
 
+# ---- 数据 ----
 data:
-  dataset: null           # scannet / replica / custom
-  data_root: null         # 通过环境变量设置
-  scene_list: []          # 场景名列表，空表示全部
+  dataset: null               # scannet / replica / campus / gazebo
+  data_root: null             # 通过环境变量 $EOF3R_DATA 设置
+  scene_list: []              # 场景名列表，空表示全部
   image_size: [640, 480]
-  num_views: null         # 使用的视图数，null = 全部
+  num_views: null             # 使用的视图数，null = 全部
+  rosbag_path: null           # rosbag 文件路径（campus 数据）
 
+# ---- 分割 ----
 segmentation:
-  method: sam2            # sam2 / yolo / gt
-  model_size: base        # tiny / small / base / large
-  min_mask_area: 500      # 最小 mask 面积（像素）
-  foreground_classes: []  # 指定前景类别，空 = 自动检测
+  method: sam2                # sam2 / yolo / gt
+  model_size: base            # tiny / small / base / large
+  min_mask_area: 500          # 最小 mask 面积（像素）
+  foreground_classes: []      # 指定前景类别，空 = 自动检测
+  box_prompt: false           # true = box prompt 模式，false = automatic
 
+# ---- 前景物体重建 ----
 foreground:
-  method: 3dgs            # 3dgs / mvsplat
-  iterations: 7000
-  densify_until_iter: 5000
+  method: mvsplat             # mvsplat (feedforward 优先) / 3dgs (优化 fallback)
+  # --- Feedforward 3DGS ---
+  num_input_views: 4          # 输入视角数
+  # --- Per-object 优化 3DGS (fallback) ---
+  iterations: 3000            # 单物体训练迭代数（比全场景少）
+  densify_until_iter: 2000
   lr:
     position: 0.00016
     scaling: 0.005
@@ -28,19 +36,104 @@ foreground:
     opacity: 0.05
     feature: 0.0025
 
+# ---- 背景重建 ----
 background:
-  method: vggt            # vggt / dust3r / colmap
-  max_resolution: 512     # feedforward 模型最大输入分辨率
+  method: vggt                # vggt / mast3r / dust3r
+  max_resolution: 512         # feedforward 模型最大输入分辨率
+  estimate_ground: true       # 是否估计地面平面
+  estimate_drivable: true     # 是否估计可通行区域
 
+# ---- 融合与 BEV 投影 ----
 fusion:
-  alignment: same_coords  # same_coords / icp / feature
-  blending: alpha         # alpha / depth / simple_overlay
+  alignment: same_coords      # same_coords / icp / feature
+  bev_resolution: 0.05        # BEV 网格分辨率 (m/cell)
+  bev_range: [-10, -10, 10, 10]  # [x_min, y_min, x_max, y_max] robot-centered
+  height_filter: [-0.5, 2.0]  # 只投影在此高度范围内的高斯球
+  gaussian_to_occupancy: max  # max / sum / threshold
 
+# ---- 代价地图 ----
+costmap:
+  resolution: 0.05            # m/cell
+  width: 400                  # cells (20m at 0.05 resolution)
+  height: 400
+  robot_radius: 0.35          # Husky 底盘半径 + 安全余量 (m)
+  layers:
+    static:
+      enabled: true
+      map_topic: /map
+    obstacle:
+      enabled: true
+      source: lidar           # lidar / depth_camera
+      obstacle_range: 5.0     # m
+      raytrace_range: 6.0
+    cloud_enhanced:
+      enabled: false          # toggle for ablation experiments
+      source: gaussian_bev
+      inflation_radius: 0.3   # 比 obstacle 层更紧的膨胀
+      semantic_weights:       # 不同类别的基础膨胀乘数
+        person: 1.5           # 行人 — 更大安全距离
+        bicycle: 1.2
+        cone: 0.8             # 路锥 — 可以靠更近
+        box: 0.9
+        default: 1.0
+    inflation:
+      enabled: true
+      inflation_radius: 0.55
+      cost_scaling_factor: 5.0
+
+# ---- 安全 ----
+safety:
+  emergency_stop_topic: /eof3r/e_stop
+  heartbeat_interval: 0.1     # 秒
+  heartbeat_timeout: 1.0      # 心跳超时 → 停车
+  max_speed_hard: 0.5         # 硬限速 (m/s)，不可 override
+  max_speed_soft: 0.3         # 默认速度 (m/s)
+  cloud_timeout_action: degrade  # degrade（降级本地避障）/ stop
+
+# ---- 云端服务 ----
+cloud:
+  enabled: false              # Phase 1 默认关闭
+  endpoint: null              # http://<server>:<port>
+  timeout: 3.0                # 请求超时 (s)
+  keyframe_interval: 5        # 每 N 帧上传 1 帧
+  max_concurrent: 1           # 同时只允许 1 个请求
+  image_quality: 80           # JPEG 压缩质量
+  reconnect_interval: 5.0     # 断连后重试间隔 (s)
+
+# ---- 机器人平台 ----
+robot:
+  platform: husky             # husky / gazebo / none
+  max_speed: 0.3              # m/s
+  sensors:
+    rgbd:
+      type: realsense_d435
+      resolution: [640, 480]
+      fps: 15
+      depth_enabled: true
+    lidar:
+      type: sick_lms111       # 或 velodyne_vlp16
+      scan_frequency: 10      # Hz
+    imu: true
+    odometry: wheel           # wheel / visual / fused
+
+# ---- Demo ----
 demo:
-  mode: object_localization  # object_localization / scene_understanding / navigation
+  mode: navigation            # navigation (新) / object_localization (旧)
   visualize: true
-  output_format: json
+  rviz_config: null           # RViz 配置文件路径
+  log_topics:                 # 自动记录的 ROS2 topic
+    - /cmd_vel
+    - /local_costmap/costmap_raw
+    - /cloud_costmap
+    - /eof3r/latency
 
+# ---- 评估 ----
 evaluation:
-  metrics: [psnr, ssim, chamfer, f_score]
-  baseline_methods: [full_3dgs, full_vggt]
+  # 3D 重建指标（保留）
+  reconstruction_metrics: [psnr, ssim, chamfer, f_score]
+  # 导航指标（新增）
+  navigation_metrics: [path_length, stop_count, path_smoothness, min_clearance,
+                       time_to_goal, detour_ratio, footprint_iou, latency_p50, latency_p95]
+  baseline_methods: [local_avoidance, cloud_enhanced]
+  # 消融变体
+  ablation_variants: [cloud_no_semantic, cloud_no_shape]

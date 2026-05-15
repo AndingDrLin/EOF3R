@@ -72,5 +72,14 @@ wandb/
 .ruff_cache/
 .pytest_cache/
 
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Rosbag files
+*.db3
+*.mcap
+
 # Python version
 .python-version

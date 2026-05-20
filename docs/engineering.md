@@ -7,10 +7,12 @@
 ## 总体原则
 
 1. **Phase N 不依赖 Phase N+1**。每一阶段独立可展示、可评估。
-2. **本地安全先行**。任何涉及真实机器人的阶段之前，安全机制必须就位。
-3. **Cloud is enhancement, not control**。这条原则贯穿所有阶段的设计。
-4. **每个模块独立可运行**。不出现"必须启动全部模块才能测试一个模块"的情况。
-5. **配置驱动**。所有路径、参数、topic 名称通过 YAML 配置，不硬编码。
+2. **Planning-oriented，非 photorealistic**。所有模块评估以占据精度、规划质量为准，不以渲染质量为准。PSNR/SSIM 只作为诊断参考。
+3. **本地安全先行**。任何涉及真实机器人的阶段之前，安全机制必须就位。
+4. **Cloud is enhancement, not control**。这条原则贯穿所有阶段的设计。
+5. **每个模块独立可运行**。不出现"必须启动全部模块才能测试一个模块"的情况。
+6. **配置驱动**。所有路径、参数、topic 名称通过 YAML 配置，不硬编码。
+7. **RGB photometric loss 是辅助**。核心损失是 occupancy/mask/depth/silhouette/footprint/semantic。
 
 ---
 
@@ -18,7 +20,7 @@
 
 ### 目标
 
-在离线数据上验证完整 pipeline 的技术可行性：分割 → 前景重建 → 背景重建 → costmap 生成 → 路径规划可视化。
+在离线数据上验证完整 pipeline 的技术可行性：分割 → 前景 Gaussian occupancy 预测 → 背景几何估计 → costmap 生成 → 路径规划可视化。不追求渲染质量，验证的是占据精度和规划增强效果。
 
 ### 不涉及
 
@@ -38,31 +40,35 @@
 |------|------|------|------|
 | `scripts/preprocess/extract_frames.py` | 从 rosbag 提取关键帧 | rosbag (.db3) | PNG 图像 + camera_info |
 | `src/segmentation/` | SAM2 前景分割 | RGB 图像 | 前景 masks + 物体 crops |
-| `src/foreground/` | MVSplat/3DGS 物体重建 | 物体 crops + masks + 位姿 | 物体 .ply + metadata json |
-| `src/background/` | VGGT/MASt3R 背景重建 | 全图/背景图 | 背景点云 + 位姿 + 地面 |
+| `src/foreground/` | G2O-inspired feedforward Gaussian occupancy | 物体 crops + masks + 位姿 + 可选 3R hint | .ply + metadata json (occupancy_alpha, footprint, semantic, confidence) |
+| `src/foreground/losses.py` | Planning-oriented 训练损失 | 预测 + GT | L_occ + L_mask + L_depth + L_silhouette + L_footprint + L_sem + L_conf + aux L_rgb |
+| `src/background/` | VGGT/MASt3R 背景几何估计 | 全图/背景图 | 背景点云 + 位姿 + 地面 |
 | `src/fusion/` | 坐标对齐 + BEV 投影 | 前景/背景 3D 数据 | 统一坐标系下的占据网格 |
-| `src/costmap/` | 语义 costmap 生成 | 占据网格 + 语义标签 | Nav2 costmap msg |
+| `src/costmap/` | 语义 costmap 生成 | 占据网格 + 语义标签 + occupancy_alpha | Nav2 costmap msg |
 | `scripts/eval/` | 离线评估 + 可视化 | costmap + 路径数据 | 指标 json + 对比图 |
 
 ### 数据流
 
 ```
 rosbag → extract_frames
-  ├→ segmentation → foreground crops
-  │                    └→ foreground/ (3DGS/MVSplat) → object Gaussians
-  └→ background/ (VGGT/MASt3R) → pointmap + poses + ground
+  ├→ segmentation → foreground crops ─┐
+  │                    └→ foreground/ (G2O-inspired feedforward) ─┤
+  │                          → geometry-semantic Gaussian primitives │
+  │                          (occupancy_alpha, footprint, semantic, │
+  │                           confidence, uncertainty)              │
+  └→ background/ (VGGT/MASt3R) → pointmap + poses + ground          │
+                                        ↓                           │
+              fusion/ (align + occupancy_alpha-thresholded BEV projection)
                                         ↓
-              fusion/ (align + BEV projection) → occupancy grid
+              costmap/ (semantic risk layers + inflation) → Nav2 costmap
                                         ↓
-              costmap/ (semantic layers + inflation) → Nav2 costmap
-                                        ↓
-              eval/ (offline path planning + metrics)
+              eval/ (offline path planning + planning-oriented metrics)
 ```
 
 ### 成功标准
 
 - [ ] 完整 pipeline 在至少 3 个场景（可使用 ScanNet++ 室内 + 自采 campus rosbag）上端到端运行
-- [ ] 物体级 3DGS 重建在少视角（2-4 crop）下，3D 几何精度（Chamfer/F-Score）可量化评估
+- [ ] G2O-inspired feedforward Gaussian occupancy 在少视角（2-4 crop）下，几何/占据精度（Chamfer/F-Score/Footprint IoU）可量化评估。PSNR/SSIM 仅作为诊断参考
 - [ ] BEV costmap 输出可在 RViz 中显示并与原始图像对齐验证
 - [ ] 离线路径规划（在 costmap 上跑 Nav2 local planner）生成可行路径
 - [ ] Baseline vs Enhanced costmap 至少有 1 个场景中产生可见差异
@@ -201,17 +207,24 @@ Phase 1 + 2 的结果 + 详细的 Phase 3 设计 + 降级行为分析 → 作为
 所有阶段共享的接口，在 Phase 1 就确定：
 
 ```
-# 物体 3DGS 输出格式 (json)
+# 物体 Gaussian occupancy 输出格式 (json)
 {
   "object_id": int,
-  "class": str,            # "bicycle", "cone", "box", ...
-  "risk_level": int,       # 0-3, 0=可通行, 3=必须远离
-  "center_3d": [x, y, z],  # meters, world frame
-  "size_3d": [l, w, h],    # meters
+  "class": str,               # "bicycle", "cone", "box", ...
+  "risk_level": int,          # 0-3, 0=可通行, 3=必须远离
+  "center_3d": [x, y, z],     # meters, world frame
+  "size_3d": [l, w, h],       # meters
+  "bbox_3d": [x_min, y_min, z_min, x_max, y_max, z_max],
   "orientation": [qw, qx, qy, qz],
+  "occupancy_alpha": float,   # 0-1, alpha threshold for BEV projection
   "bev_footprint": [[x1,y1], [x2,y2], ...],  # polygon vertices
   "confidence": float,
-  "ply_path": str           # relative path to .ply file
+  "uncertainty": {            # epistemic uncertainty
+    "total": float,
+    "aleatoric": float,
+    "epistemic": float
+  },
+  "ply_path": str             # relative path to .ply file
 }
 
 # Costmap patch 格式 (ros2 msg 或 json)

@@ -69,45 +69,56 @@
 
 ---
 
-## Stage 3：前景 Object-level 3DGS 重建（第 7-10 周）
+## Stage 3：前景 G2O-inspired Feedforward Gaussian Occupancy（第 7-10 周）
 
 > 与 Stage 4 可部分并行（第 8-10 周重叠）
+> 核心方法：融合 G2O 几何约束思想的前馈式 object-level Gaussian occupancy 预测。
+> 前景与背景分开表示；前景负责物体级占据、语义、风险和 footprint，背景由 Stage 4 负责粗几何、free-space、unknown-space 与 occlusion boundary。
+> 不使用逐场景 30k 迭代优化，不使用高阶 SH/view-dependent color 作为核心输出。
 
-### 优先路线：Feedforward 3DGS
+### 优先路线：G2O-inspired Feedforward Gaussian Occupancy
 
-- [ ] 搭建 MVSplat 或类似 feedforward 模型
-- [ ] 输入：物体多视图 crops（2-4 个视角）+ masks + 相对相机位姿
-- [ ] 输出：物体 Gaussian 参数（.ply）+ 3D 中心 + 尺寸 + 朝向 + BEV footprint
-- [ ] 评估 3D 几何精度（Chamfer, F-Score），与 GT mesh 对比
+- [ ] 搭建 feedforward Gaussian decoder（参考 MVSplat / pixelSplat 架构）
+- [ ] 引入 G2O 思想：geometry scaffold 约束前馈 decoder、opacity/confidence-aware 高斯筛选
+- [ ] 输入：RGB 多帧物体 crops（2-4 个视角）+ masks + LiDAR / depth hint + 相对相机位姿 / odometry + 可选 3R geometry hint
+- [ ] 输出：geometry-semantic Gaussian primitives（.ply + metadata json）
+  - 几何：3D center, scale, rotation, occupancy_alpha
+  - 语义：semantic class, risk_score, traversability
+  - 规划：BEV footprint, 3D bbox, confidence, uncertainty
+- [ ] 核心损失：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence
+- [ ] 辅助损失：L_rgb（权重 0.1，仅用于诊断）
+- [ ] 评估几何/占据精度（Chamfer, F-Score, Footprint IoU），PSNR 仅作参考
 
-### Fallback 路线：Per-Object 优化 3DGS
+### Fallback 路线：Per-Object 优化 3DGS + 后处理提取 Occupancy
 
 - [ ] 如果 feedforward 质量不够，回退到每个物体独立训练 3DGS
+- [ ] 从优化后的 3DGS 中后处理提取 occupancy_alpha、BEV footprint
 - [ ] 仍比全场景训练快（单个物体 + 少量迭代）
 
 ### 产出
 
-- [ ] 前景物体重建模块（`src/foreground/`）
-- [ ] 物体级 Gaussian 输出（.ply + metadata json）
-- [ ] 3D 几何精度评估脚本
+- [ ] 前景 Gaussian occupancy 模块（`src/foreground/`）
+- [ ] 物体级 Gaussian 输出（.ply + metadata json 含 occupancy_alpha, confidence, uncertainty）
+- [ ] 几何/占据精度评估脚本
 
 ---
 
-## Stage 4：背景 3R 粗重建（第 8-10 周）
+## Stage 4：背景 3R / VGGT-like 前馈世界表征估计（第 8-10 周）
 
-> 与 Stage 3 可部分并行
+> 与 Stage 3 可部分并行。目标是从 RGB、LiDAR / depth、odometry 等多模态输入中端到端预测背景状态描述（pointmap + 地面 + free-space + unknown-space + occlusion boundary + 可通行区域），不是逼真背景渲染。
 
 ### 路线
 
 - [ ] 搭建 VGGT / MASt3R 推理 pipeline
-- [ ] 输入：场景全图（或背景-masked 图）
-- [ ] 输出：dense pointmap + 相机位姿 + 地面平面估计 + 可通行区域 mask
+- [ ] 输入：场景全图（或背景-masked 图）+ LiDAR / depth + odometry / 相机位姿先验
+- [ ] 输出：dense pointmap + 相机位姿 + 地面平面估计 + free-space / unknown-space + occlusion boundary + 可通行区域 mask
 - [ ] 坐标系统一到项目约定（右手 Y-up）
+- [ ] 可选：将 3R pointmap 作为 Stage 3 前馈 decoder 的 geometry hint
 - [ ] Fallback: DUSt3R（如果 VGGT/MASt3R 有问题）
 
 ### 产出
 
-- [ ] 背景重建模块（`src/background/`）
+- [ ] 背景几何估计模块（`src/background/`）
 - [ ] 背景点云 + 地面网格 + 相机轨迹
 
 ---
@@ -117,8 +128,11 @@
 ### 路线
 
 - [ ] 前景-背景坐标对齐（利用 Stage 4 的相机位姿）
-- [ ] Object Gaussian → BEV 占据网格投影算法
+- [ ] Gaussian occupancy → BEV 占据网格投影算法（使用 occupancy_alpha 阈值 + confidence 加权）
+- [ ] 融合 object-level 前景表示与背景状态表示，生成统一的结构化世界状态
+- [ ] 统一输出：BEV occupancy、semantic costmap、free-space、unknown-space、occlusion boundary、risk score、confidence
 - [ ] 语义/风险层级生成（类别 → 风险等级 → 膨胀半径）
+- [ ] Nav2 / world model / VLA / agent 兼容的数据格式输出
 - [ ] Nav2 costmap layer 格式输出（costmap_2d plugin 接口）
 - [ ] 可视化：BEV 代价地图叠加原始图像验证
 
@@ -174,14 +188,16 @@
 - [ ] Baseline：Nav2 local planner + 纯 LiDAR obstacle layer
 - [ ] Enhanced：Nav2 local planner + LiDAR + 云端 costmap 增强层
 - [ ] 消融：costmap 去掉语义层、costmap 去掉物体形状层
+- [ ] 消融：纯 photometric loss (L_rgb only) vs planning-oriented loss (无 occupancy/mask/silhouette loss)
 
 ### 评估指标
 
 - **安全性**：collision / near-collision count
 - **效率**：time to goal, path length
 - **质量**：path smoothness (integrated curvature), unnecessary stop count, minimum clearance
-- **感知精度**：footprint estimation error, costmap IoU
+- **感知精度**：footprint IoU, costmap IoU, occupancy accuracy, 3D bbox IoU, boundary IoU
 - **系统**：latency (mean, p95, max), cloud timeout rate
+- **辅助**：PSNR/SSIM/LPIPS（diagnostic only，不是项目核心指标）
 
 ### 产出
 
@@ -229,8 +245,11 @@ Stage 8:                                                ████████
 | 旧 | 新 | 变化原因 |
 |----|-----|----------|
 | 7 阶段 | 8 阶段 | 加了车-云架构阶段 |
-| Stage 3: per-object 3DGS 训练 | Stage 3: feedforward 3DGS 优先 | 速度需求 |
+| 目标：photorealistic 3D 重建 | 目标：planning-oriented Gaussian occupancy | 项目定位调整 |
+| 主指标：PSNR/SSIM/LPIPS | 主指标：footprint IoU / occupancy accuracy / path quality | 评价体系调整 |
+| RGB photometric loss 为主 | L_occupancy + L_mask + L_depth + L_silhouette 为主，RGB 为辅 | 训练目标调整 |
+| 前馈 3DGS 为"快速精细重建" | G2O-inspired feedforward Gaussian occupancy 预测 | 方法定位调整 |
+| SH/color/view-dependent 为核心输出 | 几何/语义/占据为核心输出，SH 可丢弃 | 输出定义调整 |
 | Stage 6: Open3D 可视化 demo | Stage 6: 车-云异步架构 | 真实机器人场景 |
-| 评估只有 PSNR/SSIM/Chamfer | 加导航指标（path quality 等） | 核心贡献变了 |
 | 数据只有 ScanNet++/Replica | 加 campus rosbag + Gazebo | 需要机器人场景 |
 | 融出是 rendering | 融合输出是 BEV costmap | 目标变了 |

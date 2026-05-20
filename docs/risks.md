@@ -7,11 +7,11 @@
 
 ## 1. 科研风险
 
-### R1: Feedforward 3DGS 物体形状估计精度不够
+### R1: Feedforward Gaussian Occupancy 几何精度不够
 
 - **概率**: M | **影响**: H
-- **说明**: 当前 feedforward 3DGS（MVSplat 等）主要面向新视角合成优化，不是面向精确 3D 形状估计。在少视角（2-4 个 crop）输入下，物体 Gaussian 的几何精度可能不足以生成有用的 BEV footprint。
-- **缓解**: 优先在 ScanNet++ 上离线评估 feedforward 3DGS 的 3D 精度（Chamfer Distance, F-Score），确认可接受后再接入机器人 pipeline。
+- **说明**: G2O-inspired feedforward Gaussian occupancy 在少视角（2-4 个 crop）输入下，物体 Gaussian 的几何精度可能不足以生成有用的 BEV footprint。模型可能学会降低 occupancy_alpha 来掩盖几何不确定性，导致 BEV 投影后的 footprint 过小或空洞。
+- **缓解**: 优先在 ScanNet++ 上离线评估 occupancy accuracy（Chamfer Distance, F-Score, Footprint IoU），确认可接受后再接入机器人 pipeline。G2O 几何约束（geometry scaffold, edge supervision）本身就是缓解措施。
 - **降级**: 回退到 per-object 优化式 3DGS（仍然比全场景训练快，只需要一个物体的少量迭代）。如果还不够，退到直接用 point cloud / depth 估计生成 BEV footprint（更粗但更可靠）。
 
 ### R2: BEV 代价地图增强效果不明显
@@ -19,7 +19,7 @@
 - **概率**: M | **影响**: H
 - **说明**: 如果物体形状估计误差大，或语义风险分级的权重设置不合理，云端增强 costmap 可能和纯 LiDAR obstacle layer 差不多。这是论文核心贡献的风险。
 - **缓解**: 预先设计好消融实验梯度（纯 LiDAR → LiDAR + 粗物体形状 → LiDAR + 精确形状 → + 语义风险），确保至少有一个梯度可以看到差异。多场景多次运行取统计显著性。
-- **降级**: 如果全部条件下差异都不显著，论文贡献变为"对云端增强何时有效的表征分析"，诚实报告 null result 也是科研成果。同时加强纯 3D 重建方向的定量评估（PSNR/Chamfer），确保论文有其他支撑。
+- **降级**: 如果全部条件下差异都不显著，论文贡献变为"对云端增强何时有效的表征分析"，诚实报告 null result 也是科研成果。同时加强占据几何方向的定量评估（Chamfer Distance, F-Score, Footprint IoU），确保论文有其他支撑。
 
 ---
 
@@ -112,12 +112,32 @@
 
 ## 8. 模型效果风险
 
-### R9: 个别模块效果不达预期
+### R9: Photometric-Occupancy Misalignment
+
+- **概率**: M | **影响**: M
+- **说明**: 如果模型训练中 RGB photometric loss 和 occupancy loss 的目标不完全一致，可能出现 PSNR 尚可但 occupancy_alpha 质量差的情况（模型学会用透明度"作弊"来降低 RGB loss，而非学习正确的几何占据）。这是将 photorealistic 模型改造为 planning-oriented 模型的核心风险。
+- **缓解**:
+  - RGB loss 权重设置为 0.1（辅助监督），梯度主要通过 occupancy/mask/silhouette loss 回传。
+  - 训练过程中同时监控 RGB 指标和 occupancy 指标，确认两者不出现严重背离。
+  - 消融实验：对比 L_rgb=0.1（推荐）vs L_rgb=1.0（等权重）vs L_rgb=0（纯 occupancy），验证 RGB loss 作为辅助监督是否真的有益。
+- **降级**: 如果 RGB loss 干扰 occupancy 学习，将其权重降为 0（纯几何监督训练）。论文中诚实分析 photometric 和 occupancy 训练目标的张力。
+
+### R10: Occupancy Boundary Artifacts
+
+- **概率**: M | **影响**: M
+- **说明**: BEV 投影时，occupancy_alpha 阈值的选择直接影响 footprint 形状。阈值过高 → footprint 过小（漏掉占据区域）；阈值过低 → footprint 过大（和 LiDAR 膨胀一样保守，失去增强意义）。不同物体的最优阈值可能不同。
+- **缓解**:
+  - 在验证集上 grid search occupancy_alpha 阈值（0.1-0.9），选择 Footprint IoU 最优的值。
+  - 引入 boundary-aware edge loss（G2O-inspired），显式监督 footprint 边界质量。
+  - 输出 confidence/uncertainty，允许 costmap 融合时根据 confidence 调整 alpha 阈值。
+- **降级**: 使用固定的保守阈值（α > 0.3），宁可稍微过大也不漏掉占据。论文中报告不同阈值下的 footprint IoU 曲线。
+
+### R11: 个别模块效果不达预期
 
 - **概率**: M | **影响**: L
-- **说明**: SAM2 在某些光照/角度下分割错误、VGGT 在少纹理区域估计失败、3DGS 对透明/反光物体重建差等。
+- **说明**: SAM2 在某些光照/角度下分割错误、VGGT 在少纹理区域估计失败、Gaussian occupancy 对透明/反光物体质量差等。
 - **缓解**:
-  - 每个模块都有 fallback：SAM2 失败 → YOLO bbox detection；VGGT 失败 → DUSt3R；3DGS 失败 → point cloud。
+  - 每个模块都有 fallback：SAM2 失败 → YOLO bbox detection；VGGT 失败 → DUSt3R；Gaussian occupancy 失败 → point cloud footprint。
   - 在数据筛选阶段就排除极端困难的场景（强逆光、大面积镜面反射）。
 - **降级**: 选择"容易"场景完成 pipeline 验证。论文中诚实地讨论失败案例和适用范围。
 
@@ -126,14 +146,16 @@
 ## 降级路径总览
 
 ```
-FF 3DGS 精度不够  →  per-object 优化 3DGS  →  point cloud footprint
-3R 模型太重       →  轻量 depth estimation  →  单目 depth + 地面假设
-SAM2 太慢         →  detector + tracking    →  只在关键帧用 SAM2
-云端延迟太高      →  离线处理 + RViz 回放   →  低频增强(10s/次)
-真实 Husky 不可用  →  Gazebo 仿真           →  纯 rosbag 离线
-闭环测试不安全    →  半在线 RViz            →  离线规划对比
-系统太复杂        →  Phase 1 only           →  各模块独立 demo
-效果不明显        →  诚实报告 + 消融分析    →  转为"局限性研究"
+Gaussian occupancy 精度不够  →  per-object 优化 3DGS  →  point cloud footprint
+Photometric-occupancy 背离   →  纯几何监督 (L_rgb=0)  →  诚实分析训练张力
+Occupancy boundary 不准      →  保守 alpha 阈值       →  confidence 自适应阈值
+3R 模型太重                  →  轻量 depth estimation →  单目 depth + 地面假设
+SAM2 太慢                    →  detector + tracking   →  只在关键帧用 SAM2
+云端延迟太高                 →  离线处理 + RViz 回放  →  低频增强(10s/次)
+真实 Husky 不可用             →  Gazebo 仿真           →  纯 rosbag 离线
+闭环测试不安全               →  半在线 RViz            →  离线规划对比
+系统太复杂                   →  Phase 1 only          →  各模块独立 demo
+效果不明显                   →  诚实报告 + 消融分析   →  转为"局限性研究"
 ```
 
 **关键原则**：每一步降级都产出可展示、可评估、可写进论文的结果。不存在"全有或全无"的阻塞点。

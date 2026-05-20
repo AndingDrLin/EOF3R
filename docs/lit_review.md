@@ -12,7 +12,7 @@
 **必读**：
 - [ ] Kerbl et al., "3D Gaussian Splatting for Real-Time Radiance Field Rendering", SIGGRAPH 2023
   - 代码：`github.com/graphdeco-inria/gaussian-splatting`
-  - 对应本项目：前景物体精细重建的基础
+  - 对应本项目：前景物体占据形状估计的基础（理解 Gaussian primitive 的数学表达和渲染过程，但本项目不追求 photorealistic rendering）
 
 **参考**：
 - [ ] Mip-Splatting (CVPR 2024) — 抗锯齿
@@ -90,22 +90,25 @@
 
 ### G. Feedforward / Sparse-View 3DGS
 
-与本项目的关系：传统 3DGS 需要 7000+ 次迭代训练，不适合"看几秒就要用"的机器人场景。Feedforward 3DGS 可以在单次前向传播中预测 Gaussian 参数，使 object-level 重建在秒级完成。
+与本项目的关系：传统 3DGS 需要 7000+ 次迭代训练，不适合"看几秒就要用"的机器人场景。Feedforward 3DGS 可以在单次前向传播中预测 Gaussian 参数。**本项目借鉴 G2O-GS 的几何约束思想（geometry scaffold、opacity confidence、edge supervision）但适配为 feedforward 模式，不照搬逐场景优化流程。**
 
 要回答的问题：
 - 哪些 feedforward 3DGS 方法开源且可复现？
 - 在 2-4 个视角输入下，几何精度能达到什么水平？
-- 是否支持物体级（而非全场景）重建？
+- G2O-GS 的 geometry-guided 思想如何转化为前馈架构的设计约束？
 - 输出格式是否易转换为 BEV footprint？
 
 **阅读清单**：
+- [ ] **G2O-GS** (2025) — Geometry-guided Gaussian Occupancy: **核心思想来源**
+  - 借鉴：geometry scaffold、opacity/confidence-aware selection、edge supervision、boundary-aware loss
+  - 不照搬：逐场景 30k 迭代优化、clone/split densification、高阶 SH 渲染
 - [ ] MVSplat (Chen et al., ECCV 2024) — cost-volume based, multiple dataset support
 - [ ] pixelSplat (Charatan et al., CVPR 2024) — epipolar transformer
 - [ ] latentSplat (Wysocki et al., CVPR 2025) — latent diffusion prior
 - [ ] Splatter-Image (Szymanowicz et al., CVPR 2024) — single-view 3DGS prediction
 - [ ] Flash3DGS (2025) — real-time feedforward 3DGS
 
-**关注重点**：MVSplat（多视角、开源、精度较好）和 Splatter-Image（单视图，最极端少视角情况）。
+**关注重点**：MVSplat（多视角、开源、精度较好）和 G2O-GS（几何约束思想借鉴）。G2O-GS 的 geometry-guided optimization 思想在本项目中转化为 geometry-guided feedforward occupancy prediction。
 
 ### H. Semantic 3DGS / Feature Distillation
 
@@ -196,13 +199,33 @@
 
 ---
 
+### M. Planning-Oriented 3D Representations
+
+与本项目的关系：本项目不追求 photorealistic reconstruction，而是面向规划的几何-语义表示。需要调研已有工作中是否有类似"为规划而感知"的 3D 表示设计思路。
+
+要回答的问题：
+- 是否存在将 3D 表示直接用于规划的先行工作？
+- 占据网格（occupancy grid）与 Gaussian 表示的融合方式？
+- 如何评估"规划导向"的 3D 表示质量（非渲染指标）？
+
+**阅读/调研清单**：
+- [ ] G2O-GS (2025) — Geometry-guided Gaussian Occupancy，本项目的核心思想来源
+- [ ] OccNeRF / OccNet 系列 — 以占据预测为目标的神经表示
+- [ ] VoxFormer (CVPR 2023) — transformer-based 3D occupancy prediction
+- [ ] GaussianFormer (2024) — Gaussian-based occupancy prediction
+- [ ] DriveGaussian / ADGaussian — 自动驾驶场景的 Gaussian 表示
+
+**重点关注**：以占据精度（而非渲染质量）为训练和评估目标的 3D 表示方法。G2O-GS 的 geometry-guided 思想（geometry scaffold, opacity confidence, edge supervision）是本项目的直接灵感来源。
+
+---
+
 ## Baseline 选择（待调研后确认）
 
 | 模块 | 优先方案 | Fallback | 状态 |
 |------|----------|----------|------|
 | 前景分割 | SAM2 (box prompt) | YOLOv8 + SAM2 | 待确定 |
-| 前景重建 | MVSplat (feedforward) | 3DGS per-object optimization | 待确定 |
-| 背景重建 | VGGT / MASt3R | DUSt3R | 待确定 |
+| 前景占据估计 | MVSplat (feedforward) + G2O-inspired | 3DGS per-object optimization | 待确定 |
+| 背景几何估计 | VGGT / MASt3R | DUSt3R | 待确定 |
 | 融合与 BEV 投影 | 自行设计 | — | 待设计 |
 | Costmap 生成 | Nav2 costmap_2d custom plugin | — | 待开发 |
 | 车-云通信 | 自行设计（HTTP/gRPC + ROS2 topic） | FogROS2 参考 | 待设计 |

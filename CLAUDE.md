@@ -6,11 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## §1 项目身份与语言
 
-**EOF3R** — Efficient Object-level Feedforward 3D Reconstruction with 3D Gaussian Splatting.
+**EOF3R** — Efficient Object-level Feedforward 3D Reconstruction with 3DGS.
 
-本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。将场景分解为前景物体（feedforward 3DGS 快速精细重建）+ 背景区域（3R 模型粗重建）→ 融合 → BEV 语义占据代价地图 → ROS2 Nav2 局部路径规划增强。
+**Despite the name, the project produces planning-oriented Gaussian occupancy, not photorealistic images.**
 
-**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端负责高算力异步推理（SAM2 分割细化 / 3R 背景重建 / FF 3DGS 物体重建 / 语义 costmap 生成）。云端结果是 planning enhancement，不直接控制车辆。
+本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。融合 G2O 几何约束思想的前馈式 object-level Gaussian occupancy 方法：
+
+物体分离（SAM2）→ 背景 3R 粗几何估计（VGGT/MASt3R）→ 前景 G2O-inspired feedforward Gaussian occupancy 预测（occupancy_alpha, footprint, semantic, confidence）→ 融合 → BEV semantic costmap → 本地规划器避障与路径选择。
+
+**系统不追求逼真重建，而追求更可靠、更适合规划的几何-语义表示。**
+
+**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端负责高算力异步推理（SAM2 分割细化 / 3R 背景几何估计 / G2O-inspired feedforward Gaussian occupancy / 语义 costmap 生成）。云端结果是 planning enhancement，不直接控制车辆。云端返回的是 lightweight planning-oriented representation（object state, 3D bbox, BEV footprint, semantic label, risk score, confidence, costmap patch），不是完整 Gaussian 渲染模型。
 
 ### 语言铁律
 
@@ -76,8 +82,8 @@ EOF3R/
 ├── src/                            # Core source code (importable Python package)
 │   ├── __init__.py
 │   ├── segmentation/               # Scene decomposition (SAM2 / YOLO wrapper)
-│   ├── foreground/                 # Object-level feedforward 3DGS reconstruction
-│   ├── background/                 # 3R background reconstruction (VGGT/DUSt3R/MASt3R)
+│   ├── foreground/                 # Object-level G2O-inspired feedforward Gaussian occupancy
+│   ├── background/                 # 3R background geometry estimation (VGGT/DUSt3R/MASt3R)
 │   ├── fusion/                     # Coordinate alignment + BEV projection
 │   ├── costmap/                    # BEV semantic occupancy costmap generation
 │   ├── communication/              # Vehicle-cloud async communication layer
@@ -107,7 +113,7 @@ EOF3R/
 
 ### Naming Conventions
 
-- **Python files**: `snake_case.py` (e.g., `gaussian_renderer.py`)
+- **Python files**: `snake_case.py` (e.g., `gaussian_occupancy.py`)
 - **Config files**: `{purpose}.yaml` (e.g., `scannet.yaml`)
 - **Checkpoints**: `{model}_{dataset}_{step}.pth` (e.g., `vggt_scannet_5000.pth`)
 - **Experiments**: `{stage}_{YYYYMMDD}_{short_desc}` (e.g., `s3_20250701_chair_3dgs`)
@@ -162,7 +168,7 @@ Every dataset must be registered with: name, version, source URL, download date,
 
 ### Dataset Selection
 
-- **Primary (3D reconstruction)**: ScanNet++ (real indoor, camera poses included)
+- **Primary (geometry validation)**: ScanNet++ (real indoor, camera poses included)
 - **Primary (navigation)**: Campus rosbag (Husky self-collected, at least 3 scenarios)
 - **Backup**: Replica (synthetic, clean)
 - **Simulation**: Gazebo / Isaac Sim (for system integration testing)
@@ -251,7 +257,7 @@ All methods in the same comparison use the same random seed and data split.
 
 ### Coordinate System
 
-- **3D Reconstruction**: **Right-handed, Y-up**, unit: **meters**. OpenGL convention.
+- **3D World / Occupancy**: **Right-handed, Y-up**, unit: **meters**. OpenGL convention.
 - **BEV / Robot**: **X-forward, Y-left, Z-up**, unit: **meters**. ROS convention.
 - The conversion from Y-up (reconstruction) to Z-up (BEV) happens at the fusion→costmap boundary.
 - If a baseline uses a different convention, document and convert at the wrapper boundary.
@@ -279,20 +285,34 @@ All methods in the same comparison use the same random seed and data split.
 ### 3DGS Format
 
 - Follow the standard `.ply` format: `(x, y, z, nx, ny, nz, f_dc_0..2, f_rest_0..44, opacity, scale_0..2, rot_0..3)`.
+- SH coefficients (f_dc, f_rest) retained for baseline compatibility but may be discarded in the costmap pipeline — only geometry fields (x, y, z, scale, rotation, opacity) are used for occupancy. Add `occupancy_alpha` as an optional field for planning-oriented Gaussian primitives.
 
 ### Evaluation Metrics
+
+**Primary — Planning & Occupancy Quality:**
+
+| Domain | Metric | Direction |
+|--------|--------|-----------|
+| Occupancy Accuracy | Footprint IoU | ↑ |
+| Occupancy Accuracy | Chamfer Distance (L1) | ↓ |
+| Occupancy Accuracy | F-Score @1% / @5cm | ↑ |
+| Navigation Quality | Path Smoothness (rad/m) | ↓ |
+| Navigation Quality | Unnecessary Stop Count | ↓ |
+| Navigation Quality | Time to Goal (s) | ↓ |
+| Navigation Quality | Minimum Clearance (m) | ↑ |
+| Perception Latency | Per-frame inference time (ms) | ↓ |
+| Perception Latency | Cloud round-trip p50 / p95 (ms) | ↓ |
+
+**Auxiliary — 2D Rendering (diagnostic only, not a project goal):**
 
 | Domain | Metric | Direction |
 |--------|--------|-----------|
 | 2D Rendering | PSNR | ↑ |
 | 2D Rendering | SSIM | ↑ |
 | 2D Rendering | LPIPS (AlexNet) | ↓ |
-| 3D Geometry | Chamfer Distance (L1) | ↓ |
-| 3D Geometry | F-Score @1% / @5cm | ↑ |
-| 3D Geometry | Normal Consistency | ↑ |
-| Speed | Per-frame inference time (ms) | ↓ |
 
 Report all metrics to 3 significant figures.
+PSNR/SSIM/LPIPS reflect rendering quality, not planning utility. They are tracked for diagnostic purposes only.
 
 ---
 

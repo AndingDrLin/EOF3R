@@ -31,7 +31,7 @@
 ### 假设
 
 - **H1**：纯 LiDAR 避障会过度估计障碍物占据区域（点云稀疏 + 膨胀），导致机器人停车或绕行远大于实际需要的距离。
-- **H2**：云端 object-level 3DGS 提供更精确的物体形状 → BEV footprint 更接近实际占据 → 局部规划器可以找到更紧的通过路径。
+- **H2**：云端 G2O-inspired Gaussian occupancy 提供更精确的物体占据形状 → BEV footprint 更接近实际占据 → 局部规划器可以找到更紧的通过路径。
 - **H3**：语义信息（知道哪些物体可以靠得更近，如路锥 vs 电动车）进一步改善路径。
 
 ### 指标
@@ -44,6 +44,9 @@
 | Path smoothness | 路径曲率的积分 (rad/m) | Enhanced < Baseline |
 | Time to goal | 从起点到终点的时间 (s) | Enhanced ≤ Baseline |
 | Success rate | 无碰撞/无人工干预完成的次数 / 总次数 | 两者都应为 100% |
+| Footprint IoU | 估计 BEV footprint 与实测占据的 IoU | Enhanced > Baseline |
+| Boundary IoU | footprint 轮廓 ±15cm 范围内的 IoU | Enhanced > Baseline |
+| Occupancy accuracy | occupancy_alpha 阈值化后的占据网格精度 | Enhanced > Baseline |
 
 ### 采集数据
 
@@ -56,7 +59,7 @@
 
 ### 可视化产出
 
-- BEV 视图：LiDAR 点云 vs 云端 3DGS footprint 叠加在同一帧
+- BEV 视图：LiDAR 点云 vs 云端 Gaussian occupancy footprint 叠加在同一帧
 - 路径对比图：baseline 路径 vs enhanced 路径画在同一张 BEV 图上
 - 物体形状对比：单个障碍物的实测轮廓 vs Gaussian BEV 投影轮廓
 - 局部 costmap 快照：baseline 和 enhanced 的关键帧对比
@@ -84,14 +87,15 @@
 
 - **H1**：2D LiDAR 扫描平面在固定高度（Husky 通常 ~20cm），低矮障碍物可能被扫描到但点云稀疏，或者低于扫描平面完全漏掉。
 - **H2**：RGB-D 相机可以看到这些障碍物，云端 3R 背景重建可以检测到高度异常（地面平面之上的点）。
-- **H3**：云端 object-level 3DGS 可以为低矮物体生成更准确的 3D 形状 → BEV footprint 比 LiDAR 点云更完整。
+- **H3**：云端 Gaussian occupancy 可以为低矮物体生成更准确的占据形状 → BEV footprint 比 LiDAR 点云更完整。
 
 ### 指标
 
 | 指标 | 定义 | 预期方向 |
 |------|------|----------|
 | Obstacle detection rate | 正确识别为障碍物的比例 | Enhanced > Baseline |
-| Footprint estimation error | 估计占据区域与实测的 IoU | Enhanced > Baseline |
+| Footprint IoU | 估计 BEV footprint 与实测占据的 IoU | Enhanced > Baseline |
+| Boundary IoU | footprint 轮廓 ±15cm 范围内的 IoU | Enhanced > Baseline |
 | Height estimation error | 估计物体最高点与实测的差 (cm) | 仅 Enhanced |
 | Unnecessary stop count | (同上) | Enhanced < Baseline |
 | Path length | (同上) | Enhanced ≤ Baseline |
@@ -105,7 +109,7 @@
 ### 可视化产出
 
 - 侧视图：展示物体实际高度 vs 估计高度
-- BEV 视图：LiDAR-only costmap vs LiDAR + 3DGS costmap，标注漏检和误检
+- BEV 视图：LiDAR-only costmap vs LiDAR + 云端 Gaussian occupancy costmap，标注漏检和误检
 - 深度验证：RGB-D 深度 vs 3R 模型估计深度对比
 
 ---
@@ -134,6 +138,7 @@
 | Time to resume heading | 从交互结束到恢复原航向的时间 (s) | Enhanced ≤ Baseline |
 | Interaction clearance | 与人/自行车的最小距离 (m) | 两者都 > 安全阈值 (1.0m) |
 | Path smoothness (post-interaction) | 交互后路径段曲率积分 | Enhanced < Baseline |
+| Costmap recovery IoU | 交互后 costmap 与交互前的一致性 (IoU) | Enhanced > Baseline |
 
 ### 采集数据
 
@@ -158,7 +163,8 @@
 所有实验使用统一的评估脚本（`scripts/eval/`）：
 
 - `eval_path_quality.py` — 路径长度、平滑度、停车次数、时间
-- `eval_footprint.py` — footprint IoU、尺寸误差
+- `eval_footprint.py` — footprint IoU、boundary IoU、尺寸误差
+- `eval_occupancy.py` — occupancy accuracy、alpha threshold sweep
 - `eval_costmap.py` — costmap 差异可视化
 - `eval_latency.py` — 云端延迟统计
 

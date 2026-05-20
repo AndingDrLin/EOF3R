@@ -1,8 +1,9 @@
 # EOF3R
 
-**Efficient Object-level Feedforward 3D Reconstruction with 3DGS**
+**EOF3R: Planning-Oriented Gaussian Occupancy for Low-Speed Robot Navigation**
 
-Low-Speed Campus Delivery Robot Perception via Object-Level 3DGS and 3R Background Reconstruction.
+Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed for robot perception.
+**不追求逼真重建，追求适合规划的几何-语义表示。**
 
 本科毕业设计原型系统。
 
@@ -10,12 +11,15 @@ Low-Speed Campus Delivery Robot Perception via Object-Level 3DGS and 3R Backgrou
 
 ## 核心思路
 
-相机输入 → SAM2 前景分割 → **前景物体** Feedforward 3DGS 快速精细重建（物体级 Gaussians、3D 中心、尺寸、朝向、BEV footprint）
-　＋ **背景** 3R 模型粗重建（pointmap、相机位姿、地面结构、可通行区域）
-→ 融合 → **BEV 语义占据代价地图** → ROS2 Nav2 局部路径规划增强
+相机输入 → SAM2 前景分割 → **前景物体** G2O-inspired feedforward Gaussian occupancy 预测（object state, 3D bbox, occupancy_alpha, BEV footprint, semantic class, risk score, confidence）
+　＋ **背景** 3R 模型粗几何估计（pointmap、相机位姿、地面结构、可通行区域）
+→ 融合 → **BEV semantic costmap** → ROS2 Nav2 局部路径规划增强
+
+**训练目标**：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence（主），L_rgb（辅助）
+**RGB/photometric 是辅助监督，不是核心目标。SH/color/view-dependent effects 不是核心输出。**
 
 **车端**：始终独立运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel）
-**云端**：异步高算力推理（SAM2 mask 细化 / 3R 背景重建 / FF 3DGS 物体重建 / 语义 costmap 生成）
+**云端**：异步高算力推理（SAM2 mask 细化 / 3R 背景几何估计 / G2O-inspired feedforward Gaussian occupancy / 语义 costmap 生成）。云端返回 lightweight planning-oriented representation，不返回完整 Gaussian 渲染模型。
 
 ---
 
@@ -37,9 +41,10 @@ Low-Speed Campus Delivery Robot Perception via Object-Level 3DGS and 3R Backgrou
 │        Husky 车端             │       │      云端 GPU 服务器       │
 │                              │       │                          │
 │  相机 ─→ 关键帧选择 ─────────|─ HTTP/gRPC ─→│ SAM2 分割细化        │
-│                              │       │       3R 背景重建         │
-│  本地避障 ←── Nav2 局部规划   │       │       FF 3DGS 物体重建    │
-│    ↑                         │       │       语义 costmap 生成   │
+│                              │       │       3R 背景几何估计     │
+│  本地避障 ←── Nav2 局部规划   │       │       G2O-inspired       │
+│    ↑                         │       │       Gaussian occupancy  │
+│    │                         │       │       语义 costmap 生成   │
 │    │                         │       │              │           │
 │  LiDAR + odom + IMU          │       │              │           │
 │    +                          │       │              ↓           │

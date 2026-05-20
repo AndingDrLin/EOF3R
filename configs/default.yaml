@@ -21,11 +21,14 @@ segmentation:
   foreground_classes: []      # 指定前景类别，空 = 自动检测
   box_prompt: false           # true = box prompt 模式，false = automatic
 
-# ---- 前景物体重建 ----
+# ---- 前景 G2O-inspired Feedforward Gaussian Occupancy ----
 foreground:
   method: mvsplat             # mvsplat (feedforward 优先) / 3dgs (优化 fallback)
-  # --- Feedforward 3DGS ---
-  num_input_views: 4          # 输入视角数
+  # --- Feedforward Gaussian Occupancy ---
+  num_input_views: 4          # 输入视角数 (2-4)
+  # --- G2O-inspired geometry guidance ---
+  use_geometry_scaffold: true # inject geometry prior into feedforward decoder
+  use_opacity_confidence: true  # opacity/confidence-aware Gaussian selection
   # --- Per-object 优化 3DGS (fallback) ---
   iterations: 3000            # 单物体训练迭代数（比全场景少）
   densify_until_iter: 2000
@@ -36,12 +39,13 @@ foreground:
     opacity: 0.05
     feature: 0.0025
 
-# ---- 背景重建 ----
+# ---- 背景 3R 几何估计 ----
 background:
   method: vggt                # vggt / mast3r / dust3r
   max_resolution: 512         # feedforward 模型最大输入分辨率
   estimate_ground: true       # 是否估计地面平面
   estimate_drivable: true     # 是否估计可通行区域
+  note: "粗几何参考（pointmap + 地面 + 可通行区域），不追求逼真背景渲染"
 
 # ---- 融合与 BEV 投影 ----
 fusion:
@@ -127,13 +131,59 @@ demo:
     - /cloud_costmap
     - /eof3r/latency
 
+# ---- 训练目标 ----
+loss:
+  occupancy: 1.0            # BCE on occupancy_alpha
+  mask: 1.0                 # IoU/Dice on object silhouette
+  depth: 0.5                # L1 on rendered depth
+  silhouette: 0.5           # Chamfer on rendered vs GT silhouette boundary
+  footprint: 0.5            # IoU on BEV footprint
+  semantic: 0.3             # cross-entropy on semantic class label
+  confidence: 0.1           # calibration loss on uncertainty estimates
+  rgb: 0.1                  # L1+SSIM photometric (AUXILIARY ONLY, weight ≤0.1)
+
+# ---- 占据与边界监督 ----
+occupancy:
+  alpha_threshold: 0.5      # occupancy_alpha threshold for BEV projection
+  alpha_activation: sigmoid # sigmoid / softplus / abs
+  min_alpha_for_surface: 0.3  # below this, Gaussian contributes no surface
+
+boundary_supervision:
+  enabled: true
+  edge_loss_weight: 0.3     # weight for edge-aware loss (G2O-inspired)
+  edge_kernel_size: 3       # Sobel kernel size for edge detection
+  silhouette_loss_weight: 0.5  # Chamfer distance on rendered silhouette contour
+
+# ---- 架构 ----
+architecture:
+  backbone: unet            # unet / resnet50 / convnext_tiny
+  geometry_guidance: true   # G2O-inspired: inject geometry scaffold into decoder
+  geometry_source: 3r       # 3r (pointmap hint from VGGT/MASt3R) / none
+  decoder:
+    type: transformer       # transformer / mlp / epipolar
+    num_layers: 4
+    num_heads: 8
+    gaussian_dim: 128       # per-Gaussian feature dimension
+  output_head:
+    position: true
+    scale: true
+    rotation: true
+    occupancy_alpha: true
+    semantic_logits: true
+    confidence: true
+    rgb: false              # SH/color disabled (not a core output)
+    sh_degree: 0            # 0 = no SH, kept for baseline compatibility
+
 # ---- 评估 ----
 evaluation:
-  # 3D 重建指标（保留）
-  reconstruction_metrics: [psnr, ssim, chamfer, f_score]
-  # 导航指标（新增）
+  # 占据与规划指标（主）
+  primary_metrics: [chamfer_l1, f_score, footprint_iou, boundary_iou,
+                    occupancy_accuracy, bbox_3d_iou]
+  # 2D 渲染指标（辅助/诊断用，不是核心指标）
+  auxiliary_metrics: [psnr, ssim, lpips]
+  # 导航指标
   navigation_metrics: [path_length, stop_count, path_smoothness, min_clearance,
-                       time_to_goal, detour_ratio, footprint_iou, latency_p50, latency_p95]
+                       time_to_goal, detour_ratio, latency_p50, latency_p95]
   baseline_methods: [local_avoidance, cloud_enhanced]
   # 消融变体
-  ablation_variants: [cloud_no_semantic, cloud_no_shape]
+  ablation_variants: [cloud_no_semantic, cloud_no_shape, photometric_only]

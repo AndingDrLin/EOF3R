@@ -33,6 +33,90 @@ This file itself is in Chinese for §1 and English for code-facing sections — 
 
 ---
 
+## §1b Development Commands
+
+```bash
+# Lint & format (auto-fix)
+ruff check --fix src/ scripts/ tests/
+ruff format src/ scripts/ tests/
+
+# Pre-commit (runs ruff + trailing-whitespace + large-file check)
+pre-commit run --all-files
+
+# Run tests
+pytest tests/ -v
+
+# Run a single test file
+pytest tests/test_fusion.py -v
+
+# Setup a baseline (example: mvsplat)
+bash scripts/setup_mvsplat.sh
+# Each baseline has its own setup script and conda env (see baselines/registry.yaml)
+```
+
+### Environment Setup
+
+```bash
+conda create -n eof3r python=3.10 -y
+conda activate eof3r
+pip install -r requirements.txt
+pre-commit install
+```
+
+### Config-driven Experiments
+
+All experiments are driven by YAML configs inheriting from `configs/default.yaml`. Override fields via CLI or experiment-specific YAML. Never hardcode hyperparameters in code.
+
+---
+
+## §1c Pipeline Architecture
+
+The system runs a **4-stage pipeline**. Each stage maps to a `src/` module:
+
+```
+Input: RGB images + camera intrinsics
+       │
+       ▼
+┌─────────────────┐
+│  segmentation/   │  SAM2 / YOLO → per-object masks + class labels
+└────────┬────────┘
+         │ foreground masks, background region
+         ├──────────────────────────────┐
+         ▼                              ▼
+┌─────────────────┐           ┌─────────────────┐
+│  foreground/     │           │  background/     │
+│  MVSplat / 3DGS  │           │  VGGT / MASt3R  │
+│  → per-object    │           │  → coarse pointmap
+│  Gaussian        │           │    + ground plane
+│  occupancy       │           │    + traversable
+└────────┬────────┘           └────────┬────────┘
+         │                              │
+         └──────────┬───────────────────┘
+                    ▼
+           ┌─────────────────┐
+           │  fusion/         │  Align coords (Y-up → Z-up), BEV projection,
+           │                  │  Gaussian → occupancy grid
+           └────────┬────────┘
+                    ▼
+           ┌─────────────────┐
+           │  costmap/        │  BEV semantic costmap → ROS2 Nav2
+           │                  │  (inflation, semantic weights, risk scores)
+           └────────┬────────┘
+                    ▼
+           ┌─────────────────┐
+           │  communication/  │  Vehicle ↔ cloud async bridge
+           └─────────────────┘
+```
+
+**Key interfaces between modules:**
+- `segmentation` → `foreground`: object masks, bounding boxes, class labels
+- `segmentation` → `background`: background region mask
+- `foreground` / `background` → `fusion`: aligned 3D Gaussians / pointmaps in shared Y-up coords
+- `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame
+- `costmap` → ROS2: published as Nav2-compatible costmap layer
+
+---
+
 ## §2 Directory Structure & Naming
 
 ```

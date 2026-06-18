@@ -19,18 +19,19 @@ baselines:
   #   commit: null
   #   clone_date: null
   #   env: eof3r-3dgs
-  #   notes: Original 3DGS. Used for foreground object reconstruction.
+  #   notes: Original 3DGS. Used for foreground object reconstruction (optimization fallback).
   #   patched: false
 
   # --- Background: Feedforward Reconstruction ---
-  # - name: vggt
-  #   url: https://github.com/facebookresearch/vggt
-  #   branch: main
-  #   commit: null
-  #   clone_date: null
-  #   env: eof3r-vggt
-  #   notes: Feedforward 3D reconstruction. Used for background reconstruction.
-  #   patched: false
+  - name: vggt
+    url: https://github.com/facebookresearch/vggt
+    branch: main
+    commit: BLOCKED  # GitHub TLS handshake failure — cannot clone from this network
+    clone_date: null
+    env: eof3r-vggt
+    notes: Feedforward 3D reconstruction. Used for background coarse geometry estimation.
+           BLOCKED by network TLS error. Clone manually from a network with GitHub access.
+    patched: false
 
   # - name: dust3r
   #   url: https://github.com/naver/dust3r
@@ -42,14 +43,25 @@ baselines:
   #   patched: false
 
   # --- Feedforward 3DGS ---
-  # - name: mvsplat
-  #   url: https://github.com/donydchen/mvsplat
-  #   branch: main
-  #   commit: null
-  #   clone_date: null
-  #   env: eof3r-mvsplat
-  #   notes: Feedforward 3DGS via cost volume. Primary choice for foreground object reconstruction (no per-scene training needed).
-  #   patched: false
+  - name: mvsplat
+    url: https://github.com/donydchen/mvsplat
+    branch: main
+    commit: 01f9a28  # "Update README.md" — main branch head as of clone
+    clone_date: null
+    env: mvsplat
+    notes: Feedforward 3DGS via cost volume. Primary choice for foreground Gaussian occupancy.
+           Checkpoints: checkpoints/re10k.ckpt, checkpoints/acid.ckpt
+    patched: false
+
+  - name: depthsplat
+    url: https://github.com/chengzg/depthsplat  # actual URL may differ — verify
+    branch: main
+    commit: 2dad25a  # "Add ReSplat update"
+    clone_date: null
+    env: depthsplat
+    notes: DepthSplat variant. Available as backup for foreground module.
+           NOT registered in e2e pipeline yet.
+    patched: false
 
   # --- Enhanced 3R Models ---
   # - name: mast3r
@@ -62,14 +74,16 @@ baselines:
   #   patched: false
 
   # --- Segmentation ---
-  # - name: sam2
-  #   url: https://github.com/facebookresearch/sam2
-  #   branch: main
-  #   commit: null
-  #   clone_date: null
-  #   env: eof3r
-  #   notes: Segment Anything Model 2. Used for foreground object segmentation.
-  #   patched: false
+  - name: sam2
+    url: https://github.com/facebookresearch/sam2
+    branch: main
+    commit: BLOCKED  # GitHub TLS handshake failure — cannot clone from this network
+    clone_date: null
+    env: eof3r
+    notes: Segment Anything Model 2. Used for foreground object segmentation.
+           BLOCKED by network TLS error. Clone manually from a network with GitHub access.
+           Install: pip install -e . from baselines/sam2/ after cloning.
+    patched: false
 
   # --- ROS2 Navigation (reference, not cloned as baseline) ---
   # - name: navigation2

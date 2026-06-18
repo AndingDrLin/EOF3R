@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 # Set up MVSplat root
-MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent / "baselines" / "mvsplat"
+MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "mvsplat"
 os.chdir(MVSPLAT_ROOT)
 sys.path.insert(0, str(MVSPLAT_ROOT))
 
@@ -251,7 +251,7 @@ def main():
 
     # [4/4] Visualize
     print("\n[4/4] Saving visualization...")
-    save_dir = Path(__file__).resolve().parent.parent.parent / "outputs" / "eval"
+    save_dir = Path(__file__).resolve().parent.parent.parent.parent / "outputs" / "eval"
     try:
         p = visualize(gaussians.means[0], gaussians.opacities[0], bev, save_dir)
         print(f"  Saved: {p}")

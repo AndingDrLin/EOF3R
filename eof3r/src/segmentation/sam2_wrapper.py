@@ -21,7 +21,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_SAM2_ROOT = Path(__file__).resolve().parent.parent.parent / "baselines" / "sam2"
+_SAM2_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "sam2"
 
 _SAM2_AVAILABLE = False
 if str(_SAM2_ROOT) not in sys.path:

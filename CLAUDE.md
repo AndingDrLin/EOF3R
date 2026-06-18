@@ -585,6 +585,34 @@ pip install pyyaml scipy matplotlib  # add missing deps as needed
 
 ---
 
+## §13 Memory / Project Knowledge
+
+> **"更新记忆" means updating this section.** Do NOT create separate memory files.
+> This section records non-obvious project knowledge that isn't derivable from code or git.
+
+### Network Proxy
+When GitHub/pip connections fail (TLS error, timeout, clone failure, submodule fetch):
+```bash
+export http_proxy=http://192.168.213.103:53941
+export https_proxy=http://192.168.213.103:53941
+# For git: git config --global http.proxy http://192.168.213.103:53941
+# For pip: pip install --proxy http://192.168.213.103:53941 <package>
+```
+
+### Environment Setup Notes
+- **eof3r conda env**: Python 3.10, torch 2.5.1+cu121, RTX A6000 (48GB). All three real models verified.
+- **MVSplat must be used from its own directory** (src/ path conflict with eof3r project src/). The wrapper handles this automatically via path isolation.
+- **diff-gaussian-rasterization** must be installed with `--no-build-isolation` (needs torch at build time).
+- **VGGT requires numpy<2** — pin `numpy==1.26.4` if conflicts arise.
+- **MVSplat requires moviepy==1.0.3** (2.x API is incompatible).
+
+### Key Design Decisions
+- Subprocess approach was rejected for MVSplat; path isolation inside build() is cleaner.
+- Vectorized fusion (scatter+gaussian_smooth) chosen over per-point loop (650x speedup).
+- Stubs kept alongside real wrappers for CI/testing without GPU.
+
+---
+
 ## Quick Reference: Key Documents
 
 | Document | Purpose |
@@ -598,5 +626,6 @@ pip install pyyaml scipy matplotlib  # add missing deps as needed
 | `docs/risks.md` | Risk register with mitigations and fallback paths |
 | `docs/standards.md` | Supplementary detail for some standards |
 | `docs/todo.md` | Task checklist, updated weekly |
+| `docs/current_issues.md` | Active issues with root causes and solutions |
 | `configs/default.yaml` | Default configuration (full pipeline + robot + cloud) |
 | `baselines/registry.yaml` | External baseline manifest |

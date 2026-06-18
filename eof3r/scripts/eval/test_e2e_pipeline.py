@@ -28,8 +28,9 @@ import time
 from pathlib import Path
 
 # Add repo root to path.
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_REPO_ROOT))
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_CODE_ROOT = _REPO_ROOT / "eof3r"
+sys.path.insert(0, str(_CODE_ROOT))
 
 import matplotlib
 import numpy as np
@@ -54,7 +55,7 @@ MVSPLAT_ROOT = _REPO_ROOT / "baselines" / "mvsplat"
 def get_config() -> dict:
     """Load config from configs/default.yaml."""
     import yaml
-    config_path = _REPO_ROOT / "configs" / "default.yaml"
+    config_path = _CODE_ROOT / "configs" / "default.yaml"
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
     return cfg

@@ -27,10 +27,10 @@ ignore = [
     "B904",  # raise from within except
 ]
 exclude = [
-    "baselines/",
-    "data/",
-    "outputs/",
-    ".git/",
+    "../baselines/",
+    "../data/",
+    "../outputs/",
+    "../.git/",
 ]
 
 [tool.ruff.lint.isort]

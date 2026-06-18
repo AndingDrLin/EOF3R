@@ -1,6 +1,6 @@
 # Claude Code internal
 .claude/
-CLAUDE.md
+# CLAUDE.md is TRACKED (project constitution + memory)
 
 # Python
 __pycache__/
@@ -35,7 +35,7 @@ baselines/*
 !baselines/patches/
 
 # Thesis writing drafts (private until submission)
-thesis/writing/
+docs/thesis/writing/
 
 # Jupyter
 .ipynb_checkpoints/

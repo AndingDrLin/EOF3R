@@ -22,7 +22,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_VGGT_ROOT = Path(__file__).resolve().parent.parent.parent / "baselines" / "vggt"
+_VGGT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "vggt"
 
 _VGGT_AVAILABLE = False
 if str(_VGGT_ROOT) not in sys.path:

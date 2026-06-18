@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 # ---- MVSplat paths ----
-_MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent / "baselines" / "mvsplat"
+_MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "mvsplat"
 
 
 def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:

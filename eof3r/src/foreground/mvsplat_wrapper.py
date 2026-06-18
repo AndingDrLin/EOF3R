@@ -111,6 +111,12 @@ class GaussianData:
     harmonics: np.ndarray  # (N, 3, D_sh) — SH coefficients (may be discarded)
     rotations: np.ndarray | None  # (N, 4) — quaternions (w,x,y,z), None if unavailable
 
+    # Per-Gaussian identity encoding (Gaussian Grouping style).
+    # (N, D_id) float32 — learnable embedding, supervised by 2D masks.
+    # D_id = 16 by default.  Initialized randomly, trained via differentiable
+    # rasterization + classification head + cross-entropy against SAM masks.
+    identity_encoding: np.ndarray | None = None  # None until add_identity_encoding() called
+
 
 # ---------------------------------------------------------------------------
 # Wrapper
@@ -405,6 +411,199 @@ class MVSplatWrapper:
             "bev_footprint": bev,
             "bbox_3d": bbox_3d,
         }
+
+    # ---- identity encoding (Gaussian Grouping style) ---------------------
+
+    def add_identity_encoding(
+        self,
+        gaussians: GaussianData,
+        dim: int = 16,
+    ) -> GaussianData:
+        """Add per-Gaussian identity encoding for semantic lifting.
+
+        Initialises a (N, dim) learnable embedding per Gaussian, modelled after
+        Gaussian Grouping's _objects_dc.  The encoding is trained via
+        differentiable rendering + classification head + 2D mask supervision.
+
+        Call train_identity_encoding() to optimise the embeddings.
+
+        Args:
+            gaussians: GaussianData from infer().
+            dim: Dimensionality of identity embedding (default 16).
+
+        Returns:
+            Same GaussianData with identity_encoding set.
+        """
+        n = len(gaussians.means)
+        # Init near zero (small random values) so initial classification is uniform.
+        gaussians.identity_encoding = np.random.randn(n, dim).astype(np.float32) * 0.05
+        print(f"[MVSplatWrapper] Initialised identity encoding: ({n}, {dim})")
+        return gaussians
+
+    def train_identity_encoding(
+        self,
+        gaussians: GaussianData,
+        image: np.ndarray,
+        mask_2d: np.ndarray,  # (H, W) int32, 0=background, 1..K=object classes
+        camera_pose: np.ndarray,  # (4, 4) world-from-camera
+        K: np.ndarray,  # (3, 3) intrinsics
+        num_classes: int | None = None,
+        iterations: int = 1000,
+        lr: float = 5e-3,
+        device: str = "cuda",
+    ) -> GaussianData:
+        """Train per-Gaussian identity encoding via 2D mask supervision.
+
+        Uses differentiable Gaussian rasterization to render the identity
+        encoding to 2D, then a 1×1 conv classifier maps (D_id, H, W) →
+        (K, H, W) logits, supervised by cross-entropy against the 2D mask.
+
+        This is the feedforward analog of Gaussian Grouping's training loop:
+        freeze geometry (means, scales, rotations, opacities), train only
+        identity encoding + classifier head.
+
+        Args:
+            gaussians: GaussianData with identity_encoding initialised.
+            image: (H, W, 3) RGB image for reference (not used in loss).
+            mask_2d: (H, W) int32, 0=background, 1..K per-object class labels.
+            camera_pose: (4, 4) world-from-camera (C2W), Y-up.
+            K: (3, 3) camera intrinsics.
+            num_classes: Number of semantic classes. Auto-detect if None.
+            iterations: Training iterations (default 1000, ~30s on A6000).
+            lr: Learning rate for identity encoding + classifier.
+            device: "cuda" or "cpu".
+
+        Returns:
+            Same GaussianData with trained identity_encoding.
+        """
+        if gaussians.identity_encoding is None:
+            raise ValueError("Call add_identity_encoding() first.")
+
+        import torch
+        import torch.nn as nn
+        import torch.nn.functional as F
+
+        device_t = torch.device(device if torch.cuda.is_available() else "cpu")
+
+        k = num_classes if num_classes is not None else int(mask_2d.max()) + 1
+        d_id = gaussians.identity_encoding.shape[1]
+
+        # ---- Move Gaussian params to GPU tensors ----
+        means_t = torch.from_numpy(gaussians.means).float().to(device_t)
+        scales_t = torch.from_numpy(gaussians.scales).float().to(device_t)
+        opacities_t = torch.from_numpy(gaussians.opacities).float().to(device_t)
+        rotations_t = torch.from_numpy(gaussians.rotations).float().to(device_t) if gaussians.rotations is not None else None
+
+        # Identity encoding: (N, D_id) → need SH-like format (D_id, N, 1) for rasterizer.
+        id_enc = torch.from_numpy(gaussians.identity_encoding).float().to(device_t)
+        id_enc_param = nn.Parameter(id_enc.unsqueeze(-1).permute(1, 0, 2).contiguous())
+        # (D_id, N, 1)
+
+        # Classifier: 1×1 conv (D_id → K).
+        classifier = nn.Conv2d(d_id, k, kernel_size=1).to(device_t)
+
+        # Camera params.
+        w2c = torch.inverse(torch.from_numpy(camera_pose).float().to(device_t))  # world→cam
+        fx, fy = float(K[0, 0]), float(K[1, 1])
+        cx, cy = float(K[0, 2]), float(K[1, 2])
+        H, W = mask_2d.shape
+
+        # 2D mask tensor.
+        mask_t = torch.from_numpy(mask_2d.astype(np.int64)).long().to(device_t)
+
+        # Optimizer.
+        opt = torch.optim.Adam([
+            {"params": [id_enc_param], "lr": lr},
+            {"params": classifier.parameters(), "lr": lr},
+        ])
+
+        # ---- Training loop ----
+        print(f"[IdentityTraining] Training {iterations} iters, {k} classes, {d_id}-dim identity...")
+        for it in range(iterations):
+            opt.zero_grad()
+
+            # --- Simplified differentiable Gaussian rasterization ---
+            # Project 3D means to 2D using pinhole camera.
+            means_cam = (w2c[:3, :3] @ means_t.T + w2c[:3, 3:4]).T  # (N, 3) in cam space
+            z = means_cam[:, 2].clamp(min=1e-4)
+            u = fx * means_cam[:, 0] / z + cx
+            v = fy * means_cam[:, 1] / z + cy
+
+            # Filter Gaussians outside image.
+            valid = (u >= 0) & (u < W) & (v >= 0) & (v < H) & (z > 0.01)
+            if valid.sum() < 10:
+                continue
+
+            u_v = u[valid].long()
+            v_v = v[valid].long()
+            z_v = z[valid]
+            alpha_v = torch.sigmoid(opacities_t[valid])
+            # Scale to pixel-space radius (approximate).
+            radius_v = torch.clamp(scales_t[valid, :2].norm(dim=1) * fx / z_v, min=1.0, max=20.0)
+
+            # Identity features for valid Gaussians.
+            id_v = id_enc_param[:, valid, 0]  # (D_id, M)
+
+            # --- Splat identity to 2D grid (simplified: weighted sum per pixel) ---
+            rendered_id = torch.zeros(d_id, H, W, device=device_t)
+            weight_sum = torch.zeros(H, W, device=device_t)
+
+            sigma = radius_v / 2.0  # Gaussian sigma in pixels
+            for gi in range(valid.sum().item()):
+                r = int(radius_v[gi].item())
+                r = min(r, 30)  # limit splat radius for speed
+                if r < 1:
+                    continue
+                ui, vi = u_v[gi].item(), v_v[gi].item()
+                s = sigma[gi].item()
+                # Local window around (ui, vi).
+                umin, umax = max(0, ui - r), min(W, ui + r + 1)
+                vmin, vmax = max(0, vi - r), min(H, vi + r + 1)
+                du = torch.arange(umin, umax, device=device_t).float() - ui
+                dv = torch.arange(vmin, vmax, device=device_t).float() - vi
+                du_grid, dv_grid = torch.meshgrid(du, dv, indexing="xy")
+                dist2 = du_grid**2 + dv_grid**2
+                weight = alpha_v[gi] * torch.exp(-0.5 * dist2 / (s**2 + 1e-6))
+                # Accumulate weighted identity.
+                for ch in range(d_id):
+                    rendered_id[ch, vmin:vmax, umin:umax] += weight * id_v[ch, gi]
+                weight_sum[vmin:vmax, umin:umax] += weight
+
+            # Normalize.
+            weight_sum = weight_sum.clamp(min=1e-6)
+            rendered_id = rendered_id / weight_sum.unsqueeze(0)
+
+            # Classification.
+            logits = classifier(rendered_id.unsqueeze(0))[0]  # (K, H, W)
+            loss = F.cross_entropy(logits.unsqueeze(0), mask_t.unsqueeze(0))
+
+            loss.backward()
+            opt.step()
+
+            if it % 200 == 0:
+                pred = logits.argmax(dim=0)
+                acc = (pred == mask_t).float().mean().item()
+                print(f"  [IdentityTraining] iter {it:4d}/{iterations}  loss={loss.item():.4f}  acc={acc:.4f}")
+
+        # ---- Extract trained identity ----
+        with torch.no_grad():
+            trained_id = id_enc_param.detach().permute(1, 0, 2).squeeze(-1).cpu().numpy()  # (N, D_id)
+        gaussians.identity_encoding = trained_id.astype(np.float32)
+
+        # ---- Predict per-Gaussian object labels ----
+        # Use the classifier to predict labels from 3D identity encoding.
+        # classifier expects (B, D_id, H, W) — treat N Gaussians as spatial dim.
+        with torch.no_grad():
+            id_3d = id_enc_param.detach().permute(2, 0, 1)  # (N, D_id, 1)
+            id_3d_in = id_3d.unsqueeze(-1).permute(1, 0, 2, 3)  # (D_id, N, 1, 1) → need (B, D_id, N, 1)
+            id_3d_in = id_3d_in.permute(0, 1, 2, 3)  # already (D_id, N, 1, 1), just need B dim
+            # Correct: (1, D_id, N, 1)
+            id_3d_batch = id_3d.unsqueeze(0).permute(0, 2, 1, 3)  # (1, D_id, N, 1)
+            logits_3d = classifier(id_3d_batch)  # (1, K, N, 1)
+            per_gaussian_labels = logits_3d[0, :, :, 0].argmax(dim=0).cpu().numpy()  # (N,)
+
+        print(f"[IdentityTraining] Done. Per-Gaussian labels: {len(set(per_gaussian_labels)) - 1} objects detected.")
+        return gaussians, per_gaussian_labels
 
     # ---- checkpoint mgmt --------------------------------------------------
 

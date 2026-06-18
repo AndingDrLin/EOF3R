@@ -116,10 +116,12 @@ class VGGTWrapper:
 
         Returns:
             Dict with keys:
-              - pointmap: (N, H', W', 3) float32 — 3D world points in Y-up coords.
-              - camera_poses: (N, 4, 4) float32 — world-from-camera matrices.
+              - pointmap: (N, H', W', 3) float32 — 3D points in Y-up coords.
+              - camera_poses: (N, 4, 4) float32 — world-from-camera in Y-up coords.
+              - camera_poses_cfw: (N, 4, 4) float32 — camera-from-world in OpenCV.
               - ground_plane: (4,) float32 — (a, b, c, d) for ax+by+cz+d=0 in Y-up.
               - drivable_mask: (H', W') bool — estimated drivable floor region.
+              - image_size_hw: (h, w) tuple of processed image dimensions.
         """
         if self._model is None:
             raise RuntimeError("VGGT model not loaded. Call build() first.")
@@ -158,36 +160,47 @@ class VGGTWrapper:
 
         # Extract outputs.
         # world_points: (B=1, S, H, W, 3) → strip batch dim.
-        wp = predictions["world_points"][0].cpu().numpy().astype(np.float32)
-        # wp is in VGGT's coordinate frame.  VGGT uses a right-handed frame where
-        # the first camera is at origin looking +Z.  This is NOT the same as our Y-up
-        # convention.  We leave the conversion to the fusion stage (coord_utils.py).
-        # For now, store as-is and document the frame in metadata.
+        wp_ocv = predictions["world_points"][0].cpu().numpy().astype(np.float32)
+        # wp_ocv is in VGGT's OpenCV coordinate frame (RDF: Right-Down-Forward).
+        # The first camera is at origin looking +Z, Y points down.
+        # We convert to the project's Y-up convention (Right-Up-Backward).
 
-        # Camera poses: extract from pose_enc.
+        # Camera poses: decode VGGT's 9D pose_enc → camera-from-world (OpenCV).
         pose_enc = predictions["pose_enc"][0].cpu().numpy()  # (S, 9)
-        camera_poses = _pose_enc_to_matrices(pose_enc)
+        cfw_ocv = _pose_enc_to_matrices(pose_enc)  # camera-from-world in OpenCV
 
-        # Ground plane: fit to bottom-center region of pointmap.
+        # Convert pointmap from OpenCV RDF to Y-up (project convention).
+        wp_yup = _opencv_rdf_to_yup_points(wp_ocv)
+
+        # Convert camera poses: camera-from-world (OpenCV) → world-from-camera (Y-up).
+        wfc_ocv = _cam_from_world_to_world_from_cam(cfw_ocv)  # world-from-camera in OpenCV
+        wfc_yup = _opencv_rdf_to_yup_poses(wfc_ocv)  # world-from-camera in Y-up
+
+        # Ground plane: fit in Y-up frame.
         ground_plane = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
         if self._estimate_ground:
-            ground_plane = _estimate_ground_plane(wp)
+            ground_plane = _estimate_ground_plane_yup(wp_yup)
 
-        # Drivable mask: heuristic — low-height flat points.
-        drivable_mask = np.zeros(wp.shape[1:3], dtype=bool)
-        if self._estimate_drivable and wp.size > 0:
-            drivable_mask = _estimate_drivable_region(wp, ground_plane)
+        # Drivable mask: heuristic — low-height points in Y-up frame.
+        drivable_mask = np.zeros(wp_yup.shape[1:3], dtype=bool)
+        if self._estimate_drivable and wp_yup.size > 0:
+            drivable_mask = _estimate_drivable_region_yup(wp_yup, ground_plane)
 
         n = len(images)
         logger.info(
-            "VGGT inference: %d frames, pointmap %s, ground=%s.",
-            n, wp.shape, tuple(ground_plane.round(3)),
+            "VGGT inference: %d frames, pointmap %s (Y-up), ground=%s.",
+            n, wp_yup.shape, tuple(ground_plane.round(3)),
         )
+        # Record processed image dimensions for downstream pose consumers.
+        h_proc, w_proc = processed[0].shape[1], processed[0].shape[2]
         return {
-            "pointmap": wp,
-            "camera_poses": camera_poses,
-            "ground_plane": ground_plane,
-            "drivable_mask": drivable_mask,
+            "pointmap": wp_yup,                     # Y-up world points
+            "camera_poses": wfc_yup,                # world-from-camera in Y-up
+            "camera_poses_wfc_ocv": wfc_ocv,        # world-from-camera in OpenCV (for MVSplat)
+            "camera_poses_cfw": cfw_ocv,            # camera-from-world in OpenCV (raw VGGT)
+            "ground_plane": ground_plane,            # Y-up
+            "drivable_mask": drivable_mask,          # Y-up
+            "image_size_hw": (h_proc, w_proc),
         }
 
 
@@ -236,49 +249,158 @@ def _resize_image(image: np.ndarray, max_res: int, patch_size: int = 14) -> np.n
 
 
 def _pose_enc_to_matrices(pose_enc: np.ndarray) -> np.ndarray:
-    """Convert VGGT pose encoding (S, 9) → (S, 4, 4) world-from-camera matrices.
+    """Convert VGGT pose encoding (S, 9) → (S, 4, 4) camera-from-world matrices.
 
-    VGGT pose_enc: first 3 = translation, last 6 = rotation (6D representation).
+    VGGT pose_enc format (absT_quaR_FoV, OpenCV convention):
+      Indices 0:3 = translation T (3D)
+      Indices 3:7 = rotation quaternion (xyzw, scalar-last)
+      Indices 7:9 = field of view (h, w) — discarded
+
+    The resulting 4×4 matrix maps world coords (OpenCV RDF) to camera coords (OpenCV RDF):
+      X_cam = R @ X_world + T
+
+    For world-from-camera (used by downstream), invert the result.
     """
     s = pose_enc.shape[0]
+    T = pose_enc[:, :3]  # (S, 3)
+    quat_xyzw = pose_enc[:, 3:7]  # (S, 4) — xyzw, scalar-last
+
+    # Convert quaternion (xyzw, scalar-last) → rotation matrix (S, 3, 3).
+    R = _quat_xyzw_to_mat(quat_xyzw)
+
+    # Build camera-from-world 4×4: [R | T; 0 0 0 1].
     matrices = np.tile(np.eye(4, dtype=np.float32), (s, 1, 1))
-    # Set translation.
-    matrices[:, :3, 3] = pose_enc[:, :3]
-    # 6D rotation → 3x3 matrix.
-    r6d = pose_enc[:, 3:9].reshape(s, 2, 3)
-    # Gram-Schmidt orthogonalization.
-    a1 = r6d[:, 0, :]
-    a2 = r6d[:, 1, :]
-    b1 = a1 / (np.linalg.norm(a1, axis=1, keepdims=True) + 1e-8)
-    b2 = a2 - np.sum(b1 * a2, axis=1, keepdims=True) * b1
-    b2 = b2 / (np.linalg.norm(b2, axis=1, keepdims=True) + 1e-8)
-    b3 = np.cross(b1, b2)
-    matrices[:, :3, 0] = b1
-    matrices[:, :3, 1] = b2
-    matrices[:, :3, 2] = b3
+    matrices[:, :3, :3] = R
+    matrices[:, :3, 3] = T
     return matrices
 
 
-def _estimate_ground_plane(world_points: np.ndarray) -> np.ndarray:
-    """Fit ground plane (a,b,c,d) to central-bottom region of the pointmap.
+def _quat_xyzw_to_mat(quat_xyzw: np.ndarray) -> np.ndarray:
+    """Convert quaternions (xyzw, scalar-last) to rotation matrices.
 
-    Uses the first frame's pointmap, samples the central-bottom region,
-    and fits a plane via SVD.
+    Args:
+        quat_xyzw: (..., 4) quaternions with scalar (w) last.
 
-    NOTE: Operates in VGGT's native world frame (NOT the project Y-up frame).
-    The caller (VGGTWrapper.infer) documents this frame; conversion to the
-    project's Y-up convention happens at the fusion stage (coord_utils.py).
-    The heuristic below assumes the "ground" axis in VGGT's frame is axis-1
-    (typical for models that set the first camera at origin looking +Z).
+    Returns:
+        (..., 3, 3) rotation matrices.
     """
-    pm = world_points[0]  # (H, W, 3) — first frame
+    i, j, k, r = np.split(quat_xyzw, 4, axis=-1)
+    i, j, k, r = i[..., 0], j[..., 0], k[..., 0], r[..., 0]
+
+    two_s = 2.0 / (i * i + j * j + k * k + r * r)
+
+    o00 = 1 - two_s * (j * j + k * k)
+    o01 = two_s * (i * j - k * r)
+    o02 = two_s * (i * k + j * r)
+    o10 = two_s * (i * j + k * r)
+    o11 = 1 - two_s * (i * i + k * k)
+    o12 = two_s * (j * k - i * r)
+    o20 = two_s * (i * k - j * r)
+    o21 = two_s * (j * k + i * r)
+    o22 = 1 - two_s * (i * i + j * j)
+
+    shape = quat_xyzw.shape[:-1] + (3, 3)
+    R = np.stack([o00, o01, o02, o10, o11, o12, o20, o21, o22], axis=-1).reshape(shape)
+    return R
+
+
+def _cam_from_world_to_world_from_cam(cfw: np.ndarray) -> np.ndarray:
+    """Invert camera-from-world [R|T] matrices to world-from-camera [R^T | -R^T@T].
+
+    Args:
+        cfw: (..., 4, 4) camera-from-world matrices.
+
+    Returns:
+        (..., 4, 4) world-from-camera matrices.
+    """
+    R = cfw[..., :3, :3]  # (..., 3, 3)
+    T = cfw[..., :3, 3]  # (..., 3)
+    Rt = np.swapaxes(R, -1, -2)  # transpose: R^T
+    wfc = np.zeros_like(cfw)
+    wfc[..., :3, :3] = Rt
+    wfc[..., :3, 3] = -np.sum(Rt * T[..., None, :], axis=-1)  # -R^T @ T
+    wfc[..., 3, 3] = 1.0
+    return wfc
+
+
+# --------------------------------------------------------------------------
+# Coordinate conversion: OpenCV RDF → project Y-up
+# --------------------------------------------------------------------------
+#
+# VGGT natively outputs world_points and poses in OpenCV convention:
+#   +X = right, +Y = down, +Z = forward (RDF, right-handed)
+#   First camera at origin, looking along +Z.
+#
+# The project uses a Y-up world frame (OpenGL-like):
+#   +X = right, +Y = up, +Z = backward (right-handed)
+#
+# Conversion: R = diag(1, -1, -1) — 180° rotation around X axis.
+#   X_yup = X_ocv
+#   Y_yup = -Y_ocv  (up = opposite of down)
+#   Z_yup = -Z_ocv  (backward = opposite of forward)
+# --------------------------------------------------------------------------
+
+_R_OCV_TO_YUP = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]], dtype=np.float32)
+
+
+def _opencv_rdf_to_yup_points(points_ocv: np.ndarray) -> np.ndarray:
+    """Convert points from OpenCV RDF to project Y-up frame.
+
+    Args:
+        points_ocv: (..., 3) points in OpenCV RDF (x-right, y-down, z-forward).
+
+    Returns:
+        (..., 3) points in Y-up (x-right, y-up, z-backward).
+    """
+    points = np.asarray(points_ocv, dtype=np.float32)
+    out = np.zeros_like(points)
+    out[..., 0] = points[..., 0]  # X stays
+    out[..., 1] = -points[..., 1]  # -Y_ocv (down) → Y_yup (up)
+    out[..., 2] = -points[..., 2]  # -Z_ocv (forward) → Z_yup (backward)
+    return out
+
+
+def _opencv_rdf_to_yup_poses(wfc_ocv: np.ndarray) -> np.ndarray:
+    """Convert world-from-camera poses from OpenCV RDF world to Y-up world.
+
+    Given E_wfc_ocv that maps OpenCV camera coords → OpenCV world coords,
+    produce E_wfc_yup that maps the SAME camera coords → Y-up world coords.
+
+    p_world_yup = R @ p_world_ocv = R @ (E_wfc_ocv @ p_cam) = (R @ E_wfc_ocv) @ p_cam
+    So E_wfc_yup = R @ E_wfc_ocv.
+
+    Args:
+        wfc_ocv: (..., 4, 4) world-from-camera in OpenCV world frame.
+
+    Returns:
+        (..., 4, 4) world-from-camera in Y-up world frame.
+    """
+    R = _R_OCV_TO_YUP
+    wfc = wfc_ocv.copy()
+    wfc[..., :3, :3] = R @ wfc_ocv[..., :3, :3]
+    wfc[..., :3, 3] = (R @ wfc_ocv[..., :3, 3, None])[..., 0]
+    return wfc
+
+
+# ------------------------------------------------------------------
+# Ground estimation helpers (operate in Y-up frame)
+# ------------------------------------------------------------------
+
+
+def _estimate_ground_plane_yup(world_points: np.ndarray) -> np.ndarray:
+    """Fit ground plane (a,b,c,d) to central-bottom region in Y-up frame.
+
+    In Y-up: the ground is roughly aligned with the XZ plane (normal ≈ +Y).
+    Samples the central-bottom region of the first-frame pointmap and fits
+    a plane via SVD.
+    """
+    pm = world_points[0]  # (H, W, 3) — first frame, Y-up
     h, w = pm.shape[:2]
-    # Central 60% width, bottom 40% height.
+    # Central 60% width, bottom 40% height (near-ground region in image).
     cx_start, cx_end = int(w * 0.2), int(w * 0.8)
     cy_start, cy_end = int(h * 0.6), h
     region = pm[cy_start:cy_end, cx_start:cx_end].reshape(-1, 3)
-    # Remove extreme outliers along the presumed height axis.
-    # VGGT's native frame: axis-1 is the vertical axis (model-specific).
+    # Remove extreme outliers along Y axis (height in Y-up).
     height_vals = region[:, 1]
     q05, q95 = np.percentile(height_vals, [5, 95])
     inliers = region[(height_vals >= q05) & (height_vals <= q95)]
@@ -289,23 +411,23 @@ def _estimate_ground_plane(world_points: np.ndarray) -> np.ndarray:
     _, _, vh = np.linalg.svd(inliers - centroid, full_matrices=False)
     normal = vh[2]  # smallest singular vector
     normal = normal / (np.linalg.norm(normal) + 1e-8)
-    # Ensure normal points upward along the presumed height axis (axis-1).
+    # Ensure normal points upward (Y+ in Y-up).
     if normal[1] < 0:
         normal = -normal
     d = -np.dot(normal, centroid)
     return np.array([*normal, d], dtype=np.float32)
 
 
-def _estimate_drivable_region(
+def _estimate_drivable_region_yup(
     wp: np.ndarray, ground_plane: np.ndarray, height_thresh: float = 0.3
 ) -> np.ndarray:
-    """Heuristic drivable mask: points within height_thresh of the ground plane."""
+    """Heuristic drivable mask: points within height_thresh of the ground plane.
+
+    Operates in Y-up frame.
+    """
     normal = ground_plane[:3]
     d = ground_plane[3]
-    # Per-pixel signed distance to ground plane.
-    # VGGT world_points: [..., 0]=x, [..., 1]=y, [..., 2]=z.
-    # Ground plane in VGGT frame — use first-frame points.
-    pm = wp[0]
+    pm = wp[0]  # First frame pointmap in Y-up.
     dist = np.abs(np.dot(pm.reshape(-1, 3), normal) + d)
     dist_grid = dist.reshape(pm.shape[0], pm.shape[1])
     return dist_grid < height_thresh

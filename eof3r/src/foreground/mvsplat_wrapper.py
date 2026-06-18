@@ -185,7 +185,7 @@ class MVSplatWrapper:
                 hydra_overrides.append(f"{key}={value}")
 
         with hydra.initialize_config_dir(
-            config_dir=str(_MVSPLAT_ROOT / "config"),
+            config_dir=str(root / "config"),
             version_base=None,
         ):
             cfg_dict = hydra.compose(

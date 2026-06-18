@@ -14,8 +14,8 @@
 - [x] pyproject.toml（ruff 配置）
 - [x] .pre-commit-config.yaml
 - [x] .gitignore
-- [ ] 创建 conda 环境 `eof3r` 并安装依赖（待完成）
-- [ ] 验证环境可运行（`import torch, open3d` 等）
+- [x] 创建 conda 环境 `eof3r` 并安装依赖
+- [x] 验证环境可运行（SAM2 + VGGT + MVSplat 全部通过 E2E）
 
 ---
 
@@ -38,10 +38,10 @@
 
 ### 产出
 
-- [ ] 更新 `docs/lit_review.md`（完整论文索引）
-- [ ] `lit_notes/` 下至少 12 篇核心论文的阅读笔记
-- [ ] 确定每个模块的 baseline 选择（优先 feedforward 方案）
-- [ ] 更新 `baselines/registry.yaml`
+- [x] 更新 `docs/lit_review.md`（完整论文索引，12 方向 24 篇笔记）
+- [x] `lit_notes/` 下 24 篇核心论文的阅读笔记
+- [x] 确定每个模块的 baseline 选择（优先 feedforward 方案）
+- [ ] 更新 `baselines/registry.yaml`（MVSplat/DepthSplat/SAM2/VGGT 已登记，待补 DUSt3R/MASt3R）
 
 ---
 
@@ -78,16 +78,13 @@
 
 ### 优先路线：G2O-inspired Feedforward Gaussian Occupancy
 
-- [ ] 搭建 feedforward Gaussian decoder（参考 MVSplat / pixelSplat 架构）
-- [ ] 引入 G2O 思想：geometry scaffold 约束前馈 decoder、opacity/confidence-aware 高斯筛选
-- [ ] 输入：RGB 多帧物体 crops（2-4 个视角）+ masks + LiDAR / depth hint + 相对相机位姿 / odometry + 可选 3R geometry hint
-- [ ] 输出：geometry-semantic Gaussian primitives（.ply + metadata json）
-  - 几何：3D center, scale, rotation, occupancy_alpha
-  - 语义：semantic class, risk_score, traversability
-  - 规划：BEV footprint, 3D bbox, confidence, uncertainty
-- [ ] 核心损失：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence
+- [x] 搭建 MVSplat 前馈推理 pipeline（wrapper: build/infer/extract_occupancy）
+- [ ] 引入 G2O 思想：geometry scaffold 约束前馈 decoder、opacity/confidence-aware 高斯筛选（训练阶段，待 implement）
+- [x] 输入：RGB 多帧图像（2-4 视角）— 当前用 Re10k 全图验证
+- [x] 输出：Gaussian primitives（means, opacities, scales, covariances）— 坐标系统待校准
+- [ ] 核心损失：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence（训练阶段）
 - [ ] 辅助损失：L_rgb（权重 0.1，仅用于诊断）
-- [ ] 评估几何/占据精度（Chamfer, F-Score, Footprint IoU），PSNR 仅作参考
+- [ ] 评估几何/占据精度（Chamfer, F-Score, Footprint IoU）— 坐标校准后进行
 
 ### Fallback 路线：Per-Object 优化 3DGS + 后处理提取 Occupancy
 
@@ -97,9 +94,9 @@
 
 ### 产出
 
-- [ ] 前景 Gaussian occupancy 模块（`src/foreground/`）
-- [ ] 物体级 Gaussian 输出（.ply + metadata json 含 occupancy_alpha, confidence, uncertainty）
-- [ ] 几何/占据精度评估脚本
+- [x] 前景 Gaussian occupancy 模块（`src/foreground/mvsplat_wrapper.py`）
+- [x] Gaussian 输出（GaussianData dataclass 含 means, opacities, scales, covariances）
+- [x] E2E 测试脚本（`scripts/eval/test_e2e_pipeline.py`，38 个定量指标）
 
 ---
 
@@ -109,17 +106,17 @@
 
 ### 路线
 
-- [ ] 搭建 VGGT / MASt3R 推理 pipeline
-- [ ] 输入：场景全图（或背景-masked 图）+ LiDAR / depth + odometry / 相机位姿先验
-- [ ] 输出：dense pointmap + 相机位姿 + 地面平面估计 + free-space / unknown-space + occlusion boundary + 可通行区域 mask
-- [ ] 坐标系统一到项目约定（右手 Y-up）
+- [x] 搭建 VGGT 推理 pipeline（wrapper: VGGT.from_pretrained, 6D 位姿解码, 地面估计）
+- [x] 输入：场景全图 — Re10k 4 帧 720p 图像
+- [x] 输出：dense pointmap + 相机位姿 + 地面平面估计 + 可通行区域 mask
+- [ ] 坐标系统一到项目约定（右手 Y-up）— 🔴 当前核心问题（BEV coverage 0.45%）
 - [ ] 可选：将 3R pointmap 作为 Stage 3 前馈 decoder 的 geometry hint
-- [ ] Fallback: DUSt3R（如果 VGGT/MASt3R 有问题）
+- [ ] Fallback: DUSt3R/MASt3R（待搭建）
 
 ### 产出
 
-- [ ] 背景几何估计模块（`src/background/`）
-- [ ] 背景点云 + 地面网格 + 相机轨迹
+- [x] 背景几何估计模块（`src/background/vggt_wrapper.py` + `vggt_stub.py`）
+- [x] 背景 pointmap + 地面平面 + 相机 pose
 
 ---
 
@@ -127,20 +124,20 @@
 
 ### 路线
 
-- [ ] 前景-背景坐标对齐（利用 Stage 4 的相机位姿）
-- [ ] Gaussian occupancy → BEV 占据网格投影算法（使用 occupancy_alpha 阈值 + confidence 加权）
-- [ ] 融合 object-level 前景表示与背景状态表示，生成统一的结构化世界状态
-- [ ] 统一输出：BEV occupancy、semantic costmap、free-space、unknown-space、occlusion boundary、risk score、confidence
-- [ ] 语义/风险层级生成（类别 → 风险等级 → 膨胀半径）
-- [ ] Nav2 / world model / VLA / agent 兼容的数据格式输出
-- [ ] Nav2 costmap layer 格式输出（costmap_2d plugin 接口）
-- [ ] 可视化：BEV 代价地图叠加原始图像验证
+- [ ] 前景-背景坐标对齐 — 🔴 当前核心问题，MVSplat/VGGT 坐标系不一致
+- [x] Gaussian occupancy → BEV 占据网格投影算法（矢量化 bincount + gaussian_filter, 650x 加速）
+- [x] 融合 object-level 前景表示与背景状态表示（架构就绪，坐标校准后验证）
+- [x] 统一输出：BEV occupancy、semantic costmap（架构就绪）
+- [x] 语义/风险层级生成（类别 → 风险等级 → 膨胀半径，semantic_weights 已定义）
+- [x] Nav2 兼容的 uint8 costmap 格式输出（0=free, 254=lethal, 255=unknown）
+- [ ] Nav2 costmap layer plugin（ROS2 节点适配 — 待 Stage 6）
+- [x] 可视化：E2E pipeline 可视化（`e2e_pipeline_visualization.png`）
 
 ### 产出
 
-- [ ] 融合模块（`src/fusion/`）
-- [ ] Costmap 生成模块（`src/costmap/`）
-- [ ] Nav2 costmap layer plugin
+- [x] 融合模块（`src/fusion/bev_projector.py` + `coord_utils.py`）
+- [x] Costmap 生成模块（`src/costmap/costmap_generator.py`）
+- [ ] Nav2 costmap layer plugin（待 ROS2 集成）
 
 ---
 

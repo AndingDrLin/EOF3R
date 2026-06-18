@@ -71,6 +71,19 @@ def _load_real_image(public_dir: Path) -> np.ndarray | None:
     return np.array(img.convert("RGB"))
 
 
+def _make_default_poses(v: int, device: str = "cpu") -> torch.Tensor:
+    """Create default identity-like C2W poses (OpenCV convention).
+
+    Camera i is offset by 0.3*i in X, looking along +Z.
+    """
+    poses_list = []
+    for vi in range(v):
+        pose = torch.eye(4, device=device)
+        pose[0, 3] = 0.3 * vi  # X offset between views
+        poses_list.append(pose)
+    return torch.stack(poses_list).unsqueeze(0)  # (1, V, 4, 4)
+
+
 def _load_real_images(public_dir: Path, n: int = 4) -> list[np.ndarray] | None:
     """Load multiple real test images."""
     images = []
@@ -439,6 +452,8 @@ def main() -> None:
     print("-" * 50)
     t0 = time.perf_counter()
 
+    used_real_mvsplat = False  # track whether real MVSplat ran (for coord conversion)
+
     if args.skip_mvsplat or not torch.cuda.is_available():
         print("  WARNING: Skipping MVSplat (--skip-mvsplat or no CUDA). Using synthetic Gaussians.")
         n_synthetic = 5000
@@ -469,7 +484,6 @@ def main() -> None:
         if not os.path.exists(checkpoint_path):
             print(f"  ERROR: Checkpoint not found: {checkpoint_path}")
             print("  Falling back to synthetic Gaussians.")
-            # Fallback to synthetic.
             n_synthetic = 5000
             means = np.random.randn(n_synthetic, 3).astype(np.float32) * 3.0
             means[:, 1] = np.abs(means[:, 1]) * 0.8
@@ -487,27 +501,71 @@ def main() -> None:
         else:
             fg.build(checkpoint_path=checkpoint_path, mvsplat_root=str(MVSPLAT_ROOT))
 
-            # Build minimal input: B=1, V=2 context views.
-            v = 2
+            # Use real images and VGGT-estimated poses for coordinate consistency.
+            # VGGT outputs are in OpenCV convention; MVSplat also uses OpenCV natively,
+            # so we feed OpenCV-world-from-camera poses → MVSplat Gaussians are in
+            # the SAME OpenCV world frame as VGGT's raw pointmap.
+            real_imgs = _load_real_images(public_dir, n=4) if public_dir.exists() else None
+            v = 2  # Use 2 context views
             H, W = 256, 256
-            images = torch.rand(1, v, 3, H, W, device="cuda")
-            # Simple identity-like poses.
-            poses_list = []
-            for vi in range(v):
-                pose = torch.eye(4, device="cuda")
-                pose[0, 3] = 0.3 * vi
-                pose[2, 3] = 0.2
-                poses_list.append(pose)
-            poses = torch.stack(poses_list).unsqueeze(0)  # (1, V, 4, 4)
+
+            if is_real_vggt and real_imgs is not None:
+                # Use VGGT's estimated OpenCV-world-from-camera poses as MVSplat C2W.
+                wfc_ocv = bg_result.get("camera_poses_wfc_ocv")
+                if wfc_ocv is not None and len(wfc_ocv) >= v:
+                    mvsplat_poses_np = wfc_ocv[:v]  # (V, 4, 4) OpenCV C2W
+                    poses = torch.from_numpy(mvsplat_poses_np).float().unsqueeze(0).cuda()
+                    print("  Using VGGT-estimated OpenCV poses for MVSplat (coords aligned).")
+                else:
+                    poses = _make_default_poses(v, device="cuda")
+                    print("  WARNING: VGGT poses unavailable, using default poses.")
+            else:
+                poses = _make_default_poses(v, device="cuda")
+                print("  WARNING: VGGT not available, using default poses.")
+
+            if real_imgs is not None:
+                # Resize real images to 256x256 for MVSplat.
+                from PIL import Image as PILImage
+                resized = []
+                for img in real_imgs[:v]:
+                    im_pil = PILImage.fromarray(img).resize((W, H), PILImage.LANCZOS)
+                    im_arr = np.array(im_pil, dtype=np.float32) / 255.0  # [0, 1]
+                    resized.append(im_arr)
+                mv_imgs = np.stack(resized, axis=0)  # (V, H, W, 3)
+                mv_imgs = torch.from_numpy(mv_imgs).permute(0, 3, 1, 2).unsqueeze(0).float().cuda()
+                # (1, V, 3, H, W)
+                print(f"  Using {v} real Re10k views for MVSplat.")
+            else:
+                mv_imgs = torch.rand(1, v, 3, H, W, device="cuda")
+                print("  Using random images (no real Re10k data).")
+
+            # Build intrinsics: use default pinhole K (MVSplat handles FOV from K).
             K = torch.tensor(
-                [[[300, 0, 128], [0, 300, 128], [0, 0, 1]]],
+                [[[300, 0, W / 2], [0, 300, H / 2], [0, 0, 1]]],
                 device="cuda"
             ).repeat(1, v, 1, 1).float()
 
-            fg_result = fg.infer(images, poses, K)
+            fg_result = fg.infer(mv_imgs, poses, K)
             g_data = fg_result["gaussians"]
+            used_real_mvsplat = True
 
     stage_times["foreground"] = round(time.perf_counter() - t0, 4)
+
+    # Convert MVSplat Gaussian means from OpenCV RDF → Y-up if we used VGGT coords.
+    # MVSplat outputs in the world frame defined by input extrinsics.
+    # Since we used VGGT's OpenCV-world poses, the Gaussians are in OpenCV RDF.
+    # Convert to Y-up for fusion with VGGT pointmap (which is already Y-up).
+    if used_real_mvsplat and is_real_vggt:
+        from src.background.vggt_wrapper import _opencv_rdf_to_yup_points
+        g_data = type("GaussianData", (), {
+            "means": _opencv_rdf_to_yup_points(g_data.means),
+            "opacities": g_data.opacities,
+            "scales": g_data.scales,  # scale magnitudes are frame-invariant
+            "covariances": g_data.covariances,  # cov needs rotation too, but keeping simple for now
+            "harmonics": g_data.harmonics,
+            "rotations": g_data.rotations,
+        })()
+        print("  Converted MVSplat Gaussians: OpenCV RDF → Y-up.")
 
     # Gaussian metrics.
     gauss_metrics = compute_gaussian_metrics(
@@ -519,6 +577,7 @@ def main() -> None:
     print(f"  Opacity: mean={all_metrics['opacity_mean']:.4f}, "
           f"min={all_metrics['opacity_min']:.4f}, max={all_metrics['opacity_max']:.4f}")
     print(f"  Alpha pass rate: {all_metrics['alpha_threshold_pass_rate']:.4f}")
+    print(f"  Mean X: {g_data.means[:, 0].mean():.2f} Y: {g_data.means[:, 1].mean():.2f} Z: {g_data.means[:, 2].mean():.2f}")
     print(f"  Time: {stage_times['foreground']:.3f}s")
 
     # GPU memory.

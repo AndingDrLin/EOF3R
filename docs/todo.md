@@ -80,17 +80,17 @@
 
 ## Stage 3：前景 Object-level 3DGS 重建
 
-> 状态：SAM2 真模型已验证，MVSplat real 推理待测（env 隔离问题），fusion 瓶颈待解决
+> 状态：MVSplat real 推理已验证 ✅。坐标系统校准是当前核心 blocker（BEV coverage 0.45%）
 
 - [x] 搭建 MVSplat 推理环境（baselines/mvsplat/ 已 clone + re10k.ckpt）
 - [x] 写 MVSplat wrapper（`src/foreground/mvsplat_wrapper.py`）— build/infer/extract_occupancy
 - [x] E2E 测试通过（scripts/eval/test_e2e_pipeline.py — 5 阶段定量指标，自动检测真/stub）
 - [x] SAM2 clone + SAM2Wrapper（`src/segmentation/sam2_wrapper.py`）— HuggingFace 自动下载
-- [x] SAM2 安装依赖（pip install -e baselines/sam2/ → eof3r env, torch 2.5.1）
-- [x] SAM2 real 验证：在合成图像上检测到 1 object，6.9s ✅
-- [ ] MVSplat real 推理在 eof3r env 中运行（通过 path isolation workaround 可达，但坐标尺度待校准）
-- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（真模型推理 + 坐标校准后）
-- [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）
+- [x] SAM2 安装依赖（pip install git+https://github.com/facebookresearch/sam2.git → eof3r env）
+- [x] SAM2 real 验证：Re10k 图像 65 objects（过分割，需 YOLO 预处理）
+- [x] MVSplat real 推理在 eof3r env 中运行（path isolation 已解决，坐标尺度待校准）
+- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（坐标校准后）
+- [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）— 坐标校准后进行
 - [x] 物体参数提取：MVSplatWrapper.extract_occupancy() 返回 3D center, size, BEV footprint（需校准坐标）
 - [ ] Fallback: per-object 3DGS 优化 wrapper
 - [ ] 对比：feedforward vs optimization 的精度/速度
@@ -99,7 +99,7 @@
 
 ## Stage 4：背景 3R 粗重建
 
-> 状态：VGGT-1B 真模型已验证通过 ✅
+> 状态：VGGT-1B 真模型已验证通过 ✅。坐标系统验证是当前核心 blocker
 
 - [x] VGGT clone + 搭建环境（baselines/vggt/ 已 clone）
 - [x] 写 VGGT stub（`src/background/vggt_stub.py`）— 合成点云/位势/地面/可通行
@@ -113,7 +113,7 @@
 
 ## Stage 5：融合与 BEV 代价地图生成
 
-> 状态：所有模块就绪，真模型 E2E 跑通。当前瓶颈：fusion 矢量化（130s → 目标 <1s）
+> 状态：所有模块就绪，真模型 E2E 跑通。当前瓶颈：坐标系校准（BEV coverage 0.45% → 目标 >30%）
 
 - [x] 前景-背景坐标对齐验证（Y-up → Z-up 转换 + coord_utils.py）
 - [x] Object Gaussian → BEV 占据网格投影实现（src/fusion/bev_projector.py — max/sum/threshold）

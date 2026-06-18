@@ -1,41 +1,53 @@
 # 当前问题与解决方案
 
-> 更新时间：2025-06-18
+> 更新时间：2026-06-18
 > 所有真模型（SAM2+VGGT+MVSplat）已在统一 eof3r env 中 E2E 验证通过。
-> 以下为 BEV 占据质量问题（上次 E2E 运行发现）。
+> **坐标系匹配已解决**（commit 36ce286+）。以下为剩余 BEV 占据质量问题。
 
 ---
 
-## 🔴 问题 1：坐标系不匹配
+## ✅ 问题 1：坐标系不匹配 — 已解决 (2026-06-18)
 
-**证据**：
-- `bev_occupancy_coverage_t0.3 = 0.0045`（仅 0.45% 的 BEV cell 被占据）
-- `bev_spatial_extent_m2 = 2.24`（对于一个房间极度不合理）
-- MVSplat Gaussian 空间范围 X:[-36.6, 0.2], Z:[0.55, 86]，BEV 网格只有 20m×20m
-- FG/BG overlap IoU = 0.22（FG 高斯球与 BG pointmap 几乎没有重叠）
+**修复前证据**：
 - Drivable conflict rate = 100%（FG 说被占的地方，BG 全说 drivable）
+- FG/BG overlap IoU = 0.22（两模型输出在不同坐标帧）
 
-**根因**：MVSplat 输出的高斯球坐标系统与 VGGT 输出的 pointmap 坐标系统不一致，且两者都未与项目的 Y-up 约定对齐。
+**根因**：
+1. MVSplat 用合成 pose（任意世界帧），VGGT 自估计 pose（首帧相机原点 + unit-scale 归一化）
+2. VGGT 输出在 OpenCV RDF 帧，项目使用 Y-up 帧——wrapper 未做转换
+3. VGGT `_pose_enc_to_matrices()` 错误解码 pose_enc（6D rotation → 应是 quat+FOV）
 
-**修复方向**：
-1. 分别检查 MVSplat 编码器输出的坐标系（可能是相机坐标系或 MVSplat 内部归一化坐标）
-2. 检查 VGGT `world_points` 的实际坐标系（以首帧相机为原点？）
-3. 寻找两个模型输出间的坐标变换（scale/rotation/translation）
-4. 在 fusion 阶段加入坐标系校准参数（`configs/fusion.yaml`）
-5. 增大 BEV grid range 或根据实际场景动态调整
+**修复内容**（`eof3r/src/background/vggt_wrapper.py` + `eof3r/scripts/eval/test_e2e_pipeline.py`）：
+1. 修正 `_pose_enc_to_matrices()`：正确解码 VGGT 的 9D pose_enc（T(3)+quat(4)+FOV(2)）
+2. 添加 `_opencv_rdf_to_yup_points/poses()`：OpenCV RDF → Y-up (R=diag(1,-1,-1))
+3. E2E 测试用 VGGT 的 OpenCV 位姿作为 MVSplat C2W extrinsics → 两模型同帧
+4. MVSplat 高斯球 + VGGT pointmap 统一转换到 Y-up 后再融合
+
+**修复后结果**：
+- Drivable conflict rate: 100% → **0.00%** ✅
+- FG/BG overlap IoU: 0.22 → 0.21（持平——重叠差来自 scale 问题，非坐标系统）
+- 两者确实在同一坐标帧中（冲突率归零证实）
+
+**遗留**：VGGT 的 unit-scale 归一化导致场景被压缩（见问题 2）。
 
 ---
 
-## 🔴 问题 2：BEV 网格覆盖不足
+## 🔴 问题 2：VGGT Unit-Scale 归一化导致 BEV 覆盖不足
 
-**证据**：高斯球空间范围 36m×36m，BEV grid 仅 20m×20m。90% 以上的高斯球在 grid 边界外被裁剪。
+**证据**（2026-06-18 E2E 运行）：
+- `bev_occupancy_coverage_t0.3 = 0.0009`（0.09%，比修复前的 0.45% 更差——因为坐标对齐后高度滤波生效）
+- `bev_spatial_extent_m2 = 6.42`（占 BEV grid 1600m² 的 0.4%）
+- MVSplat 高斯球 Mean Y=4.47m（高于相机），高度滤波 (-0.5, 2.0) 过滤大部分
+- VGGT 训练时对 pointmap 做了 unit average distance 归一化（`vggt/training/train_utils/normalization.py:100-103`）
 
-**根因**：`configs/default.yaml` 的 `fusion.bev_range=[-10, -10, 10, 10]` 是固定值，不匹配 Re10k 场景的尺度。
+**根因**：VGGT 输出的世界坐标被归一化到平均距离≈1，而 BEV grid 配置为 40×40m 真实尺度。整个场景被压缩在几米范围内，cell 密度极低。
 
 **修复方向**：
-1. 根据实际高斯球的 spatial range 自动计算 BEV range
-2. 或增大默认 BEV range 到 ±40m
-3. 对高斯球坐标做 scale 归一化后再投影
+1. ~~增大 BEV range~~（已从 20m→40m，不解决根本问题）
+2. 根据 VGGT 输出的实际 spatial range 动态设置 BEV grid 范围+分辨率
+3. 尝试从 VGGT pointmap 恢复真实尺度（需要已知某一维度的真实长度）
+4. 对于纯融合验证，使用 VGGT stub（合成数据在真实米尺度）跳过 unit-scale 问题
+5. 长期：在 pipeline 中加入 scale calibration 模块（利用 LiDAR/depth 测量作为 scale anchor）
 
 ---
 
@@ -77,16 +89,18 @@
 
 ## 已解决的问题（存档）
 
+- ✅ 坐标系不匹配（问题 1）：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 100%→0%
 - ✅ Fusion 速度：130s → 0.05s（矢量化 bincount + gaussian_filter）
 - ✅ eof3r 统一环境：SAM2 + VGGT + MVSplat 三个真模型均在同一 env 验证通过
 - ✅ MVSplat torch 兼容：通过 sys.path + sys.modules 隔离解决 src/ 命名冲突
 - ✅ 公开数据集：Re10k 4 帧 720p 图像已保存到 `data/public/re10k_samples/`
 - ✅ SAM2/VGGT clone（GitHub TLS）：通过代理 192.168.213.103:53941 解决
 - ✅ 项目重构：代码集中于 `eof3r/`，文档集中于 `docs/`
+- ✅ 项目解耦：wrappers 优先使用 pip 安装的包，baselines/ 仅作开发 fallback
 
 ---
 
-## 环境信息（更新于 2025-06-18）
+## 环境信息（更新于 2026-06-18）
 
 **唯一环境**：`eof3r` — Python 3.10, torch 2.5.1+cu121, GPU NVIDIA RTX A6000 (48GB)
 **峰值显存**（三模型全部加载）: ~6.3 GB

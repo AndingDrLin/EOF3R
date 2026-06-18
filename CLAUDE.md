@@ -41,9 +41,9 @@ conda activate eof3r
 python eof3r/scripts/eval/test_e2e_pipeline.py
 # Outputs: outputs/eval/e2e_metrics.json + e2e_pipeline_visualization.png
 
-# BEV projection verification (MVSplat only, requires chdir to MVSplat root)
+# BEV projection verification (MVSplat only, auto-resolves MVSplat root)
 conda activate eof3r
-cd baselines/mvsplat && python ../../eof3r/scripts/eval/verify_mvsplat_bev.py
+python eof3r/scripts/eval/verify_mvsplat_bev.py
 
 # Lint & format (auto-fix)
 ruff check --fix eof3r/src/ eof3r/scripts/ --config eof3r/pyproject.toml
@@ -56,21 +56,22 @@ bash eof3r/scripts/setup_mvsplat.sh
 ### Environment
 
 ```bash
-# Single unified environment (2025-06-18)
+# Single unified environment (2026-06-18)
 conda activate eof3r  # Python 3.10 + torch 2.5.1 + CUDA 12.1 + all models
 
 # To recreate from scratch:
 conda create -n eof3r python=3.10 -y && conda activate eof3r
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -e baselines/sam2/
-pip install -e baselines/vggt/
-pip install -e baselines/mvsplat/  # not a pip pkg — install deps manually
+pip install git+https://github.com/facebookresearch/sam2.git
+pip install git+https://github.com/facebookresearch/vggt.git
+# For MVSplat: git clone https://github.com/donydchen/mvsplat && export MVSPLAT_ROOT=/path/to/mvsplat
+pip install -r eof3r/requirements.txt
 # For full deps list, inspect the install commands in memory or docs/current_issues.md.
 
 # GPU: NVIDIA RTX A6000 (48GB), peak VRAM ~6.3GB (VGGT + MVSplat together)
 ```
 
-### Known Blockers (as of 2025-06-18)
+### Known Blockers (as of 2026-06-18)
 
 - ~~SAM2/VGGT cannot be cloned~~ → **Resolved.** Cloned via network proxy (192.168.213.103:53941).
 - ~~eof3r env not created~~ → **Resolved.** All three real models (SAM2, VGGT, MVSplat) verified in eof3r.
@@ -128,7 +129,7 @@ Input: RGB images + camera intrinsics
 - `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame (BEVProjector → CostmapGenerator)
 - `costmap` → ROS2: uint8 costmap array (0=free, 254=lethal), not yet published to ROS topic
 
-**Stub vs Real Status (as of 2025-06-18):**
+**Stub vs Real Status (as of 2026-06-18):**
 | Module | File | Status |
 |--------|------|--------|
 | segmentation | `sam2_wrapper.py` | 🟢 Real SAM2 via HuggingFace (auto-download), fallback to `sam2_stub.py` |
@@ -159,7 +160,7 @@ EOF3R/                              # Repo root
 │   ├── standards.md
 │   ├── todo.md
 │   ├── current_issues.md           # Active issues with root causes & solutions
-│   ├── lit_notes/                  # Paper reading notes (23 papers)
+│   ├── lit_notes/                  # Paper reading notes (24 papers)
 │   ├── experiments/                # Experiment logbook
 │   └── thesis/                     # Paper-writing materials
 │       ├── figures/ tables/ references/ notes/
@@ -215,7 +216,7 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
 
 6. **Baseline code is gitignored.** Only `registry.yaml` and `patches/` are committed.
 
-### Current Status (2025-06-18)
+### Current Status (2026-06-18)
 
 | Baseline | Status | Notes |
 |----------|--------|-------|

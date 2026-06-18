@@ -59,6 +59,7 @@ class VGGTWrapper:
         max_resolution: int = 512,
         estimate_ground: bool = True,
         estimate_drivable: bool = True,
+        known_camera_height_m: float | None = None,
     ) -> None:
         """Initialize VGGT wrapper.
 
@@ -66,10 +67,14 @@ class VGGTWrapper:
             max_resolution: Resize images so max side ≤ this (px).
             estimate_ground: Fit a ground plane from the pointmap.
             estimate_drivable: Heuristic drivable mask from low-height points.
+            known_camera_height_m: If provided, use ground plane to recover
+                real-world scale (metres).  Required for robot deployment
+                where camera mounting height is known.
         """
         self._max_resolution = max_resolution
         self._estimate_ground = estimate_ground
         self._estimate_drivable = estimate_drivable
+        self._known_camera_height_m = known_camera_height_m
         self._model: object | None = None
 
     # ------------------------------------------------------------------
@@ -186,6 +191,47 @@ class VGGTWrapper:
         if self._estimate_drivable and wp_yup.size > 0:
             drivable_mask = _estimate_drivable_region_yup(wp_yup, ground_plane)
 
+        # ---- Scale recovery: reverse VGGT's unit-average-distance normalization ----
+        # VGGT training divides world_points by avg_scale (mean distance from first
+        # camera).  We recover this scale from the ground plane (if camera height is
+        # known) or from the camera baseline.  The recovered scale is applied to all
+        # VGGT outputs so downstream modules work in real metres.
+        from ..fusion.coord_utils import (
+            recover_scale_from_ground,
+            apply_scale_to_pointmap,
+            apply_scale_to_poses,
+        )
+
+        scale_factor = 1.0
+        scale_source = "none"
+
+        if self._known_camera_height_m is not None and self._estimate_ground:
+            scale_factor = recover_scale_from_ground(
+                ground_plane, self._known_camera_height_m
+            )
+            scale_source = f"ground (h={self._known_camera_height_m}m)"
+        # Fallback: try baseline method if we have ≥2 frames.
+        elif len(images) >= 2:
+            # Heuristic: assume ~1m baseline as a rough guess for hand-held capture.
+            from ..fusion.coord_utils import recover_scale_from_baseline
+            scale_factor = recover_scale_from_baseline(cfw_ocv, known_baseline_m=1.0)
+            scale_source = "baseline (assumed 1m)"
+
+        if scale_factor != 1.0 and scale_source != "none":
+            wp_yup = apply_scale_to_pointmap(wp_yup, scale_factor)
+            wfc_yup = apply_scale_to_poses(wfc_yup, scale_factor)
+            wfc_ocv = apply_scale_to_poses(wfc_ocv, scale_factor)
+            cfw_ocv = apply_scale_to_poses(cfw_ocv, scale_factor)
+            logger.info(
+                "VGGT scale recovered (%s): factor=%.3f → pointmap in real metres.",
+                scale_source, scale_factor,
+            )
+        else:
+            logger.info(
+                "VGGT scale NOT recovered — output is in unit-scale (avg dist ≈ 1). "
+                "Pass known_camera_height_m= to enable scale recovery."
+            )
+
         n = len(images)
         logger.info(
             "VGGT inference: %d frames, pointmap %s (Y-up), ground=%s.",
@@ -201,6 +247,8 @@ class VGGTWrapper:
             "ground_plane": ground_plane,            # Y-up
             "drivable_mask": drivable_mask,          # Y-up
             "image_size_hw": (h_proc, w_proc),
+            "scale_factor": scale_factor,
+            "scale_source": scale_source,
         }
 
 

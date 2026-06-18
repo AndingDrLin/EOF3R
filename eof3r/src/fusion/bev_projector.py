@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .coord_utils import yup_to_zup
+from .coord_utils import compute_bev_bounds_from_data, yup_to_zup
 
 
 @dataclass
@@ -40,11 +40,18 @@ class BEVProjector:
         cfg = config or {}
         self._resolution = cfg.get("bev_resolution", 0.05)
         rng = cfg.get("bev_range", [-10, -10, 10, 10])
-        self._x_range = (rng[0], rng[2])
-        self._y_range = (rng[1], rng[3])
+        if rng == "auto" or rng is None:
+            self._auto_bounds = True
+            self._x_range = (0.0, 0.0)
+            self._y_range = (0.0, 0.0)
+        else:
+            self._auto_bounds = False
+            self._x_range = (rng[0], rng[2])
+            self._y_range = (rng[1], rng[3])
         self._height_range = cfg.get("height_filter", (-0.5, 2.0))
         self._agg_mode = cfg.get("gaussian_to_occupancy", "max")
         self._alpha_threshold = cfg.get("alpha_threshold", 0.3)
+        self._target_cells = cfg.get("bev_target_cells", 400)
 
     @property
     def grid_shape(self) -> tuple[int, int]:
@@ -95,6 +102,21 @@ class BEVProjector:
         m = means_zup[mask]
         o = opacities[mask]
         s = scales_zup[mask]
+
+        # Auto-compute BEV bounds from data if configured AND not already set.
+        # Call set_bounds_from_points() first for multi-source projections so that
+        # FG and BG share the same grid dimensions.
+        if self._auto_bounds and self._x_range == (0.0, 0.0) and len(m) > 10:
+            from .coord_utils import zup_to_yup
+            pts_yup = zup_to_yup(m)
+            new_range, new_res = compute_bev_bounds_from_data(
+                pts_yup,
+                height_range_yup=(-0.5, 2.0),
+                target_cells=self._target_cells,
+            )
+            self._x_range = (new_range[0], new_range[2])
+            self._y_range = (new_range[1], new_range[3])
+            self._resolution = new_res
 
         h, w = self.grid_shape
         x_min, x_max = self._x_range
@@ -280,6 +302,42 @@ class BEVProjector:
             self._agg_mode = config["gaussian_to_occupancy"]
         if "alpha_threshold" in config:
             self._alpha_threshold = config["alpha_threshold"]
+
+    def set_bounds_from_points(
+        self,
+        fg_means_yup: np.ndarray | None = None,
+        bg_means_yup: np.ndarray | None = None,
+    ) -> None:
+        """Pre-compute unified BEV bounds from foreground + background points.
+
+        Call this once before project_gaussians_to_bev so both FG and BG
+        projections share the same grid dimensions.
+
+        Args:
+            fg_means_yup: (N, 3) FG Gaussian means in Y-up, or None.
+            bg_means_yup: (M, 3) BG pointmap points in Y-up, or None.
+        """
+        if not self._auto_bounds:
+            return
+        pts_list = []
+        if fg_means_yup is not None and len(fg_means_yup) > 0:
+            pts_list.append(fg_means_yup)
+        if bg_means_yup is not None and len(bg_means_yup) > 0:
+            pts_list.append(bg_means_yup)
+        if not pts_list:
+            return
+
+        all_pts = np.concatenate(pts_list, axis=0)
+        from .coord_utils import compute_bev_bounds_from_data
+
+        new_range, new_res = compute_bev_bounds_from_data(
+            all_pts,
+            height_range_yup=(-0.5, 2.0),  # Y-up height filter
+            target_cells=self._target_cells,
+        )
+        self._x_range = (new_range[0], new_range[2])
+        self._y_range = (new_range[1], new_range[3])
+        self._resolution = new_res
 
     @staticmethod
     def _resize_to_grid(arr: np.ndarray, h: int, w: int) -> np.ndarray:

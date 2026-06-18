@@ -45,16 +45,21 @@ background:
   max_resolution: 512         # feedforward 模型最大输入分辨率
   estimate_ground: true       # 是否估计地面平面
   estimate_drivable: true     # 是否估计可通行区域
+  # Real camera height above ground in metres.  Used to recover real-world scale
+  # from VGGT's unit-normalized output.  Set to null to skip scale recovery.
+  # On Husky: measure actual camera mounting height (e.g. 1.2–1.5m).
+  known_camera_height_m: 1.5  # null = skip scale recovery
   note: "粗几何参考（pointmap + 地面 + 可通行区域），不追求逼真背景渲染"
 
 # ---- 融合与 BEV 投影 ----
 fusion:
   alignment: same_coords      # same_coords / icp / feature
   bev_resolution: 0.05        # BEV 网格分辨率 (m/cell)
-  # BEV range in Z-up robot frame: [x_min, y_min, x_max, y_max] in meters.
-  # NOTE: Re10k scenes span ~36m×36m; campus scenes will be smaller.
-  # When MVSplat outputs world-scale coords, use ±40 or auto-detect dynamically.
-  bev_range: [-40, -40, 40, 40]  # [x_min, y_min, x_max, y_max] robot-centered, Z-up
+  # BEV range in Z-up robot frame: [x_min, y_min, x_max, y_max] in metres.
+  # Set to "auto" to dynamically compute bounds from actual data extent.
+  # Fixed ranges: Re10k ~±40m, campus ~±20m.
+  bev_range: auto              # "auto" or [x_min, y_min, x_max, y_max] in metres
+  bev_target_cells: 400        # target grid cells per dim (auto mode only)
   # Height filter in Z-up coords (z=up): [z_min, z_max].
   # 1.5m is typical eye-level, 0.2m catches low obstacles.
   height_filter: [-0.5, 2.0]  # 只投影在此高度范围内的高斯球 (Z-up)

@@ -417,6 +417,7 @@ def main() -> None:
         max_resolution=config.get("background", {}).get("max_resolution", 512),
         estimate_ground=config.get("background", {}).get("estimate_ground", True),
         estimate_drivable=config.get("background", {}).get("estimate_drivable", True),
+        known_camera_height_m=config.get("background", {}).get("known_camera_height_m", 1.5),
     )
     if is_real_vggt:
         try:
@@ -442,8 +443,12 @@ def main() -> None:
     all_metrics["bg_pointmap_shape"] = str(bg_result["pointmap"].shape)
     all_metrics["bg_num_views"] = len(bg_result["camera_poses"])
     all_metrics["bg_is_real"] = is_real_vggt
+    all_metrics["bg_scale_factor"] = round(float(bg_result.get("scale_factor", 1.0)), 4)
+    all_metrics["bg_scale_source"] = str(bg_result.get("scale_source", "none"))
     print(f"  Pointmap shape: {bg_result['pointmap'].shape}")
     print(f"  Camera poses: {len(bg_result['camera_poses'])} views")
+    if bg_result.get("scale_factor", 1.0) != 1.0:
+        print(f"  Scale recovered: ×{bg_result['scale_factor']:.3f} ({bg_result.get('scale_source', 'unknown')})")
     print(f"  Time: {stage_times['background']:.3f}s")
 
     # ---- Stage 3: Foreground (MVSplat) ----
@@ -595,8 +600,19 @@ def main() -> None:
 
     from src.fusion import BEVProjector
 
-    fusion_cfg = config.get("fusion", {})
+    fusion_cfg = dict(config.get("fusion", {}))
+    # Enable dynamic BEV bounds — grid adapts to actual data extent.
+    fusion_cfg.setdefault("bev_range", "auto")
+    fusion_cfg.setdefault("bev_target_cells", 400)
     projector = BEVProjector(fusion_cfg)
+
+    # Pre-compute unified BEV bounds from BOTH FG and BG data so they share
+    # the same grid dimensions.  This avoids shape mismatches during fusion.
+    bg_pointmap_yup = bg_result["pointmap"][0]  # (H, W, 3) first frame
+    projector.set_bounds_from_points(
+        fg_means_yup=g_data.means,
+        bg_means_yup=bg_pointmap_yup.reshape(-1, 3),
+    )
 
     # Project foreground Gaussians to BEV.
     fg_bev_grid = projector.project_gaussians_to_bev(
@@ -606,10 +622,8 @@ def main() -> None:
     )
 
     # Project background pointmap to BEV.
-    # Take the first frame's pointmap, convert Y-up means to BEV.
-    bg_pointmap = bg_result["pointmap"][0]  # (H, W, 3) in Y-up
-    h_pm, w_pm = bg_pointmap.shape[:2]
-    bg_means = bg_pointmap.reshape(-1, 3)
+    # Use the same bg_pointmap_yup pre-loaded above for set_bounds_from_points.
+    bg_means = bg_pointmap_yup.reshape(-1, 3)
     # Use synthetic opacities for background.
     bg_opacities = np.random.rand(len(bg_means)).astype(np.float32) * 0.5 + 0.3
     bg_scales = np.full((len(bg_means), 3), 0.1, dtype=np.float32)

@@ -36,26 +36,21 @@ This file itself is in Chinese for §1 and English for code-facing sections — 
 ## §1b Development Commands
 
 ```bash
-# End-to-end pipeline test (with full quantitative metrics)
-conda activate mvsplat  # workaround: eof3r env not yet created
-python scripts/eval/test_e2e_pipeline.py --skip-mvsplat
-# Omit --skip-mvsplat on GPU machines with MVSplat checkpoint available.
+# End-to-end pipeline test (SAM2 + VGGT + MVSplat, all real models)
+conda activate eof3r
+python eof3r/scripts/eval/test_e2e_pipeline.py
 # Outputs: outputs/eval/e2e_metrics.json + e2e_pipeline_visualization.png
 
-# BEV projection verification (MVSplat only)
-conda activate mvsplat
-cd baselines/mvsplat && python ../../scripts/eval/verify_mvsplat_bev.py
+# BEV projection verification (MVSplat only, requires chdir to MVSplat root)
+conda activate eof3r
+cd baselines/mvsplat && python ../../eof3r/scripts/eval/verify_mvsplat_bev.py
 
 # Lint & format (auto-fix)
-ruff check --fix src/ scripts/
-ruff format src/ scripts/
+ruff check --fix eof3r/src/ eof3r/scripts/ --config eof3r/pyproject.toml
+ruff format eof3r/src/ eof3r/scripts/ --config eof3r/pyproject.toml
 
-# Pre-commit (runs ruff + trailing-whitespace + large-file check)
-pre-commit run --all-files
-
-# Setup a baseline (example: mvsplat)
-bash scripts/setup_mvsplat.sh
-# Each baseline has its own setup script and conda env (see baselines/registry.yaml)
+# Setup a baseline
+bash eof3r/scripts/setup_mvsplat.sh
 ```
 
 ### Environment
@@ -148,80 +143,40 @@ Input: RGB images + camera intrinsics
 ## §2 Directory Structure & Naming
 
 ```
-EOF3R/
-├── README.md                       # Project overview & current progress
-├── CLAUDE.md                       # This file — project constitution
-├── requirements.txt                # Minimal Python dependencies
-├── pyproject.toml                  # Project metadata & ruff config
-├── .pre-commit-config.yaml         # Pre-commit hooks
+EOF3R/                              # Repo root
+├── README.md
+├── CLAUDE.md                       # Project constitution + memory (§13)
 ├── .gitignore
-├── .env.example                    # Environment variable template
 │
-├── docs/                           # Project documentation (中文)
+├── docs/                           # ALL documentation (中文)
 │   ├── project_scope.md
-│   ├── project_audit.md             # Diagnostic: current state vs new direction
+│   ├── project_audit.md
 │   ├── roadmap.md
 │   ├── lit_review.md
-│   ├── experiments.md               # Navigation experiment designs
-│   ├── engineering.md               # Three-phase engineering plan
-│   ├── risks.md                     # Risk register with mitigations
+│   ├── experiments.md
+│   ├── engineering.md
+│   ├── risks.md
 │   ├── standards.md
-│   └── todo.md
+│   ├── todo.md
+│   ├── current_issues.md           # Active issues with root causes & solutions
+│   ├── lit_notes/                  # Paper reading notes (23 papers)
+│   ├── experiments/                # Experiment logbook
+│   └── thesis/                     # Paper-writing materials
+│       ├── figures/ tables/ references/ notes/
+│       └── writing/  (gitignored)
 │
-├── lit_notes/                      # Paper reading notes (中文, one per paper)
-│   └── _template.md
+├── eof3r/                          # ALL runnable code
+│   ├── src/                        # Importable Python package (8 modules)
+│   ├── scripts/                    # Standalone scripts (eval/, robot/, etc.)
+│   ├── configs/                    # YAML configs (default.yaml, plot_style.yaml, ...)
+│   ├── tests/                      # Smoke tests per module
+│   ├── requirements.txt
+│   ├── pyproject.toml
+│   └── .pre-commit-config.yaml
 │
-├── experiments/                    # Experiment logbook (中文, one per experiment)
-│   └── exp_template.md
-│
-├── configs/                        # YAML configuration files
-│   ├── default.yaml                # Default config — all experiments inherit from this
-│   ├── plot_style.yaml             # Unified plotting style for paper figures
-│   ├── data/                       # Dataset-specific configs
-│   ├── model/                      # Model-specific hyperparameter configs
-│   ├── robot/                      # Husky/Nav2 parameter configs
-│   └── cloud/                      # Cloud server configs
-│
-├── baselines/                      # External open-source code (gitignored)
-│   ├── registry.yaml               # Manifest: URL, commit, env per baseline
-│   └── patches/                    # Patches applied on top of upstream baselines
-│
-├── scripts/                        # Standalone scripts (runnable, not importable)
-│   ├── preprocess/                 # [empty]
-│   ├── eval/test_e2e_pipeline.py   # Full 5-stage E2E test with quantitative metrics
-│   ├── eval/verify_mvsplat_bev.py  # MVSplat → BEV verification
-│   └── robot/                      # Husky launch/ROS2 config scripts [.gitkeep only]
-│
-├── src/                            # Core source code (importable Python package)
-│   ├── __init__.py
-│   ├── segmentation/               # Scene decomposition (SAM2Stub → future SAM2Wrapper)
-│   ├── foreground/                 # MVSplatWrapper — feedforward Gaussian occupancy
-│   ├── background/                 # VGGTStub → future VGGTWrapper
-│   ├── fusion/                     # BEVProjector + coord_utils (Y-up↔Z-up)
-│   ├── costmap/                    # CostmapGenerator (Nav2 uint8 format)
-│   ├── communication/              # [stub only] Vehicle-cloud async communication
-│   ├── demo/                       # [empty] ROS2 navigation demo
-│   └── utils/                      # [empty] Shared utilities
-│
-├── data/                           # NOT version-controlled
-│   ├── test_fixtures/              # Small test data (<1MB, committed)
-│   ├── raw/                        # Symlinks to $EOF3R_DATA (gitignored)
-│   └── processed/                  # (gitignored)
-│
-├── outputs/                        # NOT version-controlled
-│   ├── results/{exp_name}/         # Experiment outputs: config.yaml, metrics.json,
-│   │                               #   visualizations/, checkpoints/
-│   ├── logs/{exp_name}.log         # Training logs
-│   └── cache/                      # Cached intermediate results
-│
-├── thesis/                         # Paper-writing materials (separate from outputs)
-│   ├── writing/                    # Drafts (.md / .tex) — gitignored
-│   ├── figures/                    # Publication-quality PDF/PNG (≥300 DPI)
-│   ├── tables/                     # LaTeX tables
-│   ├── references/                 # BibTeX / PDF references
-│   └── notes/                      # Writing-related notes
-│
-└── tests/                          # Smoke tests per module
+├── baselines/                      # External code (gitignored except registry+patches)
+├── data/                           # Datasets (gitignored except test_fixtures/)
+└── outputs/                        # Experiment outputs (gitignored)
 ```
 
 ### Naming Conventions

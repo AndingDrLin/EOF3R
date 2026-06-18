@@ -79,12 +79,13 @@
 
 ## Stage 3：前景 Object-level 3DGS 重建
 
-> 状态：模块骨架就绪 + E2E 测试通过，SAM2/VGGT stub 占位中（GitHub TLS 阻塞）
+> 状态：真模块 + stub 双轨就绪，E2E 自动检测并回退。SAM2/VGGT 需安装依赖后再测试真模型。
 
 - [x] 搭建 MVSplat 推理环境（baselines/mvsplat/ 已 clone + re10k.ckpt）
 - [x] 写 MVSplat wrapper（`src/foreground/mvsplat_wrapper.py`）— build/infer/extract_occupancy
-- [x] E2E 测试通过（scripts/eval/test_e2e_pipeline.py — 5 阶段定量指标）
-- [ ] SAM2 clone + 替换 SAM2Stub → SAM2Wrapper（GitHub TLS 阻塞）
+- [x] E2E 测试通过（scripts/eval/test_e2e_pipeline.py — 5 阶段定量指标，自动检测真/stub）
+- [x] SAM2 clone + SAM2Wrapper（`src/segmentation/sam2_wrapper.py`）— 自动降级到 SAM2Stub
+- [ ] SAM2 安装依赖（pip install -e baselines/sam2/ + torch>=2.5.1）
 - [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（真模型推理）
 - [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）
 - [ ] 物体参数提取：3D center, size, orientation, BEV footprint
@@ -95,11 +96,12 @@
 
 ## Stage 4：背景 3R 粗重建
 
-> 状态：VGGT stub 就绪，真模型被 GitHub TLS 阻塞
+> 状态：真模块 + stub 双轨就绪，VGGT 需安装依赖 + CUDA 后测试
 
-- [ ] 搭建 VGGT 推理环境（GitHub TLS 阻塞 — 无法 clone）
-- [x] 写 VGGT stub（`src/background/vggt_stub.py`）— 合成点云/位姿/地面/可通行
-- [ ] VGGT clone 后替换 stub → VGGTWrapper
+- [x] VGGT clone + 搭建环境（baselines/vggt/ 已 clone）
+- [x] 写 VGGT stub（`src/background/vggt_stub.py`）— 合成点云/位势/地面/可通行
+- [x] 写 VGGTWrapper（`src/background/vggt_wrapper.py`）— from_pretrained + 6D 位姿解码 + 地面平面估计
+- [ ] VGGT 安装依赖（pip install -e baselines/vggt/ + CUDA）
 - [ ] 搭建 MASt3R/DUSt3R fallback 环境
 - [ ] 输出：pointmap + 相机位姿 + 地面估计
 - [ ] 地面平面估计 + 可通行区域 mask 生成

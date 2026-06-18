@@ -26,11 +26,12 @@ baselines:
   - name: vggt
     url: https://github.com/facebookresearch/vggt
     branch: main
-    commit: BLOCKED  # GitHub TLS handshake failure — cannot clone from this network
-    clone_date: null
+    commit: a288dd0  # "readme" — main branch head as of 2025-06-18
+    clone_date: 2025-06-18
     env: eof3r-vggt
-    notes: Feedforward 3D reconstruction. Used for background coarse geometry estimation.
-           BLOCKED by network TLS error. Clone manually from a network with GitHub access.
+    notes: Feedforward 3D reconstruction (CVPR 2025 Best Paper). Used for background
+           coarse geometry estimation (pointmap, camera poses, depth, ground plane).
+           Checkpoint: facebook/VGGT-1B on HuggingFace Hub.
     patched: false
 
   # - name: dust3r
@@ -77,12 +78,12 @@ baselines:
   - name: sam2
     url: https://github.com/facebookresearch/sam2
     branch: main
-    commit: BLOCKED  # GitHub TLS handshake failure — cannot clone from this network
-    clone_date: null
+    commit: 2b90b9f  # "remove .pin_memory() ..." — main branch head as of 2025-06-18
+    clone_date: 2025-06-18
     env: eof3r
     notes: Segment Anything Model 2. Used for foreground object segmentation.
-           BLOCKED by network TLS error. Clone manually from a network with GitHub access.
-           Install: pip install -e . from baselines/sam2/ after cloning.
+           Install: pip install -e baselines/sam2/ after satisfying torch>=2.5.1.
+           Checkpoints loaded via HuggingFace (facebook/sam2-hiera-{tiny,small,base+,large}).
     patched: false
 
   # --- ROS2 Navigation (reference, not cloned as baseline) ---

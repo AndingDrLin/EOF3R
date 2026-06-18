@@ -324,46 +324,112 @@ def main() -> None:
 
     # ---- Stage 1: Segmentation ----
     print("\n" + "-" * 50)
-    print("[Stage 1/5] Segmentation (SAM2 stub)")
+    print("[Stage 1/5] Segmentation")
     print("-" * 50)
     t0 = time.perf_counter()
 
-    from src.segmentation import SAM2Stub
+    from src.segmentation import SAM2, SAM2Stub
 
-    seg = SAM2Stub(
+    # Use real SAM2 if available, else stub.
+    is_real_sam2 = SAM2 is not SAM2Stub
+    print(f"  Using: {'REAL SAM2Wrapper' if is_real_sam2 else 'SAM2Stub (synthetic)'}")
+
+    seg = SAM2(
         model_size=config.get("segmentation", {}).get("model_size", "base"),
         min_mask_area=config.get("segmentation", {}).get("min_mask_area", 500),
     )
-    # Create a synthetic test image (RGB, 640x480).
-    h_img, w_img = 480, 640
-    test_image = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
+    if is_real_sam2:
+        try:
+            seg.build()
+        except Exception as e:
+            print(f"  WARNING: SAM2 build failed ({e}), falling back to stub.")
+            seg = SAM2Stub(
+                model_size=config.get("segmentation", {}).get("model_size", "base"),
+                min_mask_area=config.get("segmentation", {}).get("min_mask_area", 500),
+            )
+            is_real_sam2 = False
+
+    # Use either the real MVSplat test image or a synthetic one.
+    if is_real_sam2:
+        # Try to load a real test image from MVSplat dataloader.
+        try:
+            from src.foreground.mvsplat_wrapper import _MVSPLAT_ROOT as _MR, _ensure_mvsplat_on_path
+            _ensure_mvsplat_on_path()
+            import torch as _torch
+            import hydra as _hydra
+            from src.config import load_typed_root_config as _lcfg
+            from src.global_cfg import set_cfg as _scfg
+            from src.dataset.data_module import DataModule as _DM
+            from src.misc.step_tracker import StepTracker as _ST
+            with _hydra.initialize_config_dir(config_dir=str(_MR / "config"), version_base=None):
+                _cd = _hydra.compose(config_name="main", overrides=[
+                    "+experiment=re10k", "mode=test",
+                    "dataset/view_sampler=evaluation",
+                    "dataset/view_sampler.index_path=assets/evaluation_index_re10k.json",
+                    "dataset.skip_bad_shape=false",
+                ])
+            _cfg = _lcfg(_cd); _scfg(_cd)
+            _dm = _DM(_cfg.dataset, _cfg.data_loader, _ST(), global_rank=0)
+            _dm.setup("test")
+            _dl = _dm.test_dataloader()
+            _batch = next(iter(_dl))
+            real_images = _batch["context"]["image"]  # (B, V, 3, H, W)
+            # Use first view of first scene as test image.
+            test_image = (real_images[0, 0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+            print(f"  Loaded real image from MVSplat Re10k loader: {test_image.shape}")
+        except Exception as e:
+            print(f"  WARNING: Could not load real image ({e}), using synthetic.")
+            h_img, w_img = 480, 640
+            test_image = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
+    else:
+        # Create a synthetic test image.
+        h_img, w_img = 480, 640
+        test_image = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
+
     seg_result = seg.segment(test_image, box_prompt=False)
 
     stage_times["segmentation"] = round(time.perf_counter() - t0, 4)
     all_metrics["seg_num_objects"] = int(len(seg_result["masks"]))
+    all_metrics["seg_is_real"] = is_real_sam2
     print(f"  Objects detected: {all_metrics['seg_num_objects']}")
+    print(f"  Labels: {seg_result.get('labels', 'N/A')}")
     print(f"  Time: {stage_times['segmentation']:.3f}s")
 
-    # ---- Stage 2: Background (VGGT stub) ----
+    # ---- Stage 2: Background ----
     print("\n" + "-" * 50)
-    print("[Stage 2/5] Background (VGGT stub)")
+    print("[Stage 2/5] Background")
     print("-" * 50)
     t0 = time.perf_counter()
 
-    from src.background import VGGTStub
+    from src.background import VGGT, VGGTStub
 
-    bg = VGGTStub(
+    is_real_vggt = VGGT is not VGGTStub
+    print(f"  Using: {'REAL VGGTWrapper' if is_real_vggt else 'VGGTStub (synthetic)'}")
+
+    bg = VGGT(
         max_resolution=config.get("background", {}).get("max_resolution", 512),
         estimate_ground=config.get("background", {}).get("estimate_ground", True),
         estimate_drivable=config.get("background", {}).get("estimate_drivable", True),
     )
-    # Provide 2 synthetic views.
-    bg_images = [test_image.copy(), test_image.copy()]
+    if is_real_vggt:
+        try:
+            bg.build()
+        except Exception as e:
+            print(f"  WARNING: VGGT build failed ({e}), falling back to stub.")
+            bg = VGGTStub(
+                max_resolution=config.get("background", {}).get("max_resolution", 512),
+                estimate_ground=True, estimate_drivable=True,
+            )
+            is_real_vggt = False
+
+    # Provide 2 views (duplicate the test image if only 1 real image available).
+    bg_images = [test_image.copy() for _ in range(2)]
     bg_result = bg.infer(bg_images)
 
     stage_times["background"] = round(time.perf_counter() - t0, 4)
     all_metrics["bg_pointmap_shape"] = str(bg_result["pointmap"].shape)
     all_metrics["bg_num_views"] = len(bg_result["camera_poses"])
+    all_metrics["bg_is_real"] = is_real_vggt
     print(f"  Pointmap shape: {bg_result['pointmap'].shape}")
     print(f"  Camera poses: {len(bg_result['camera_poses'])} views")
     print(f"  Time: {stage_times['background']:.3f}s")

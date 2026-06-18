@@ -27,7 +27,7 @@ _SAM2_AVAILABLE = False
 if str(_SAM2_ROOT) not in sys.path:
     sys.path.insert(0, str(_SAM2_ROOT))
 try:
-    from sam2.build_sam import build_sam2
+    from sam2.build_sam import build_sam2_hf
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
     _SAM2_AVAILABLE = True
@@ -46,8 +46,8 @@ _CLASS_MAPPING: dict[int, str] = {
     7: "door",
 }
 
-# SAM2 checkpoint registry (HuggingFace model IDs).
-_CHECKPOINTS = {
+# SAM2 checkpoint registry — HuggingFace model IDs for each size.
+_HF_CHECKPOINTS: dict[str, str] = {
     "tiny": "facebook/sam2-hiera-tiny",
     "small": "facebook/sam2-hiera-small",
     "base": "facebook/sam2-hiera-base-plus",
@@ -69,12 +69,12 @@ class SAM2Wrapper:
             model_size: One of tiny/small/base/large. Selects checkpoint.
             min_mask_area: Minimum mask area in pixels (SAM2 post-processing).
         """
-        if model_size not in _CHECKPOINTS:
+        if model_size not in _HF_CHECKPOINTS:
             raise ValueError(
-                f"Unknown model_size '{model_size}'. Choose from {list(_CHECKPOINTS.keys())}."
+                f"Unknown model_size '{model_size}'. Choose from {list(_HF_CHECKPOINTS.keys())}."
             )
         self._model_size = model_size
-        self._checkpoint = _CHECKPOINTS[model_size]
+        self._checkpoint = _HF_CHECKPOINTS[model_size]
         self._min_mask_area = min_mask_area
         self._predictor: object | None = None
         self._mask_generator: SAM2AutomaticMaskGenerator | None = None
@@ -90,7 +90,7 @@ class SAM2Wrapper:
         """
         if model_size is not None:
             self._model_size = model_size
-            self._checkpoint = _CHECKPOINTS[model_size]
+            self._checkpoint = _HF_CHECKPOINTS[model_size]
 
         if not _SAM2_AVAILABLE:
             raise ImportError(
@@ -99,10 +99,9 @@ class SAM2Wrapper:
                 f"{_get_torch_version()}"
             )
 
-        logger.info("Loading SAM2 checkpoint: %s", self._checkpoint)
-        sam2_model = build_sam2(
-            config_file=self._model_size,
-            ckpt_path=None,  # triggers HuggingFace download
+        logger.info("Loading SAM2 from HuggingFace: %s", self._checkpoint)
+        sam2_model = build_sam2_hf(
+            self._checkpoint,
             device="cuda" if _cuda_available() else "cpu",
         )
         self._mask_generator = SAM2AutomaticMaskGenerator(

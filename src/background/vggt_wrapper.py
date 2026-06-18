@@ -173,17 +173,28 @@ class VGGTWrapper:
 # ------------------------------------------------------------------
 
 
-def _resize_image(image: np.ndarray, max_res: int) -> np.ndarray:
-    """Resize image so max(H, W) ≤ max_res, preserving aspect ratio."""
+def _resize_image(image: np.ndarray, max_res: int, patch_size: int = 14) -> np.ndarray:
+    """Resize image so max(H, W) ≤ max_res, then round to patch_size multiples.
+
+    VGGT uses a ViT backbone with patch_size=14.  Input dimensions must be
+    divisible by 14 or the patch embedder asserts.
+    """
     h, w = image.shape[:2]
     scale = min(max_res / max(h, w), 1.0)
-    if scale >= 1.0:
-        return image.transpose(2, 0, 1)  # HWC → CHW
-    new_h, new_w = int(h * scale), int(w * scale)
-    import cv2
+    if scale < 1.0:
+        new_h, new_w = int(h * scale), int(w * scale)
+        import cv2
 
-    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    return resized.transpose(2, 0, 1)
+        image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = new_h, new_w
+    # Round down to nearest patch_size multiple.
+    h = (h // patch_size) * patch_size
+    w = (w // patch_size) * patch_size
+    if h != image.shape[0] or w != image.shape[1]:
+        import cv2
+
+        image = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
+    return image.transpose(2, 0, 1)  # HWC → CHW
 
 
 def _pose_enc_to_matrices(pose_enc: np.ndarray) -> np.ndarray:

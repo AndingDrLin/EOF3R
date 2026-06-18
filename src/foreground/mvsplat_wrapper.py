@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,13 +23,34 @@ import torch
 _MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent / "baselines" / "mvsplat"
 
 
-def _ensure_mvsplat_on_path() -> None:
-    """Register MVSplat source on sys.path if not already there."""
+def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:
+    """Register MVSplat source onto sys.path and chdir to MVSplat root.
+
+    MVSplat's src/ package conflicts with our project's src/.
+    We save the current sys.path + sys.modules state, strip everything
+    except system paths, prepend MVSplat paths, and chdir to the MVSplat root.
+    Caller MUST restore via _restore_from_mvsplat().
+    """
+    import importlib
+
+    mvsplat_root = str(_MVSPLAT_ROOT)
     mvsplat_src = str(_MVSPLAT_ROOT / "src")
-    if mvsplat_src not in sys.path:
-        sys.path.insert(0, mvsplat_src)
-    if str(_MVSPLAT_ROOT) not in sys.path:
-        sys.path.insert(0, str(_MVSPLAT_ROOT))
+
+    # Save current state.
+    saved_path = list(sys.path)
+    saved_modules = {}
+    for key in list(sys.modules.keys()):
+        if key == "src" or key.startswith("src.") or key.startswith("config") or key.startswith("dataset") or key.startswith("model") or key.startswith("loss") or key.startswith("misc") or key.startswith("evaluation") or key.startswith("global_cfg"):
+            saved_modules[key] = sys.modules.pop(key)
+    previous_cwd = os.getcwd()
+
+    # Clear all user paths, keep only system + MVSplat paths.
+    system_paths = [p for p in sys.path if "site-packages" in p or "python3" in p or p in ("", "/usr/lib")]
+    sys.path[:] = [mvsplat_root, mvsplat_src] + system_paths
+
+    importlib.invalidate_caches()
+    os.chdir(mvsplat_root)
+    return previous_cwd, saved_path, saved_modules
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +109,16 @@ class MVSplatWrapper:
             checkpoint_path: Path to .ckpt file (e.g. checkpoints/re10k.ckpt).
             config_overrides: Optional hydra-style overrides dict.
         """
-        _ensure_mvsplat_on_path()
+        previous_cwd, saved_path, saved_modules = _ensure_mvsplat_on_path()
 
         import hydra
+        from hydra.core.global_hydra import GlobalHydra
+
+        # Clear Hydra singleton if already initialized (VGGT or others may have used it).
+        try:
+            GlobalHydra.instance().clear()
+        except Exception:
+            pass
 
         from src.config import load_typed_root_config
         from src.global_cfg import set_cfg
@@ -105,7 +134,7 @@ class MVSplatWrapper:
             f"checkpointing.load={checkpoint_path}",
             "mode=test",
             "dataset/view_sampler=evaluation",
-            "dataset/view_sampler.index_path=assets/evaluation_index_re10k.json",
+            "++dataset.view_sampler.index_path=assets/evaluation_index_re10k.json",
             "dataset.skip_bad_shape=false",
             "test.compute_scores=false",
             "test.save_image=false",
@@ -150,6 +179,13 @@ class MVSplatWrapper:
             f"[MVSplatWrapper] Loaded checkpoint: {checkpoint_path} "
             f"(GPU: {torch.cuda.get_device_name(0)})"
         )
+        # Restore original paths, cwd, and modules.
+        for key in list(sys.modules.keys()):
+            if key == "src" or key.startswith("src.") or key.startswith("config") or key.startswith("dataset") or key.startswith("model") or key.startswith("loss") or key.startswith("misc") or key.startswith("evaluation") or key.startswith("global_cfg"):
+                del sys.modules[key]
+        sys.path[:] = saved_path
+        sys.modules.update(saved_modules)
+        os.chdir(previous_cwd)
 
     # ---- infer ------------------------------------------------------------
 

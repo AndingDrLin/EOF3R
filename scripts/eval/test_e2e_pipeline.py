@@ -60,6 +60,29 @@ def get_config() -> dict:
     return cfg
 
 
+def _load_real_image(public_dir: Path) -> np.ndarray | None:
+    """Load the first real test image from data/public/ if available."""
+    frame_path = public_dir / "frame_00.png"
+    if not frame_path.exists():
+        return None
+    from PIL import Image
+    img = Image.open(frame_path)
+    return np.array(img.convert("RGB"))
+
+
+def _load_real_images(public_dir: Path, n: int = 4) -> list[np.ndarray] | None:
+    """Load multiple real test images."""
+    images = []
+    for i in range(n):
+        frame_path = public_dir / f"frame_{i:02d}.png"
+        if not frame_path.exists():
+            return None
+        from PIL import Image
+        img = Image.open(frame_path)
+        images.append(np.array(img.convert("RGB")))
+    return images
+
+
 # ---------------------------------------------------------------------------
 # Metrics helpers
 # ---------------------------------------------------------------------------
@@ -349,42 +372,15 @@ def main() -> None:
             )
             is_real_sam2 = False
 
-    # Use either the real MVSplat test image or a synthetic one.
-    if is_real_sam2:
-        # Try to load a real test image from MVSplat dataloader.
-        try:
-            from src.foreground.mvsplat_wrapper import _MVSPLAT_ROOT as _MR, _ensure_mvsplat_on_path
-            _ensure_mvsplat_on_path()
-            import torch as _torch
-            import hydra as _hydra
-            from src.config import load_typed_root_config as _lcfg
-            from src.global_cfg import set_cfg as _scfg
-            from src.dataset.data_module import DataModule as _DM
-            from src.misc.step_tracker import StepTracker as _ST
-            with _hydra.initialize_config_dir(config_dir=str(_MR / "config"), version_base=None):
-                _cd = _hydra.compose(config_name="main", overrides=[
-                    "+experiment=re10k", "mode=test",
-                    "dataset/view_sampler=evaluation",
-                    "dataset/view_sampler.index_path=assets/evaluation_index_re10k.json",
-                    "dataset.skip_bad_shape=false",
-                ])
-            _cfg = _lcfg(_cd); _scfg(_cd)
-            _dm = _DM(_cfg.dataset, _cfg.data_loader, _ST(), global_rank=0)
-            _dm.setup("test")
-            _dl = _dm.test_dataloader()
-            _batch = next(iter(_dl))
-            real_images = _batch["context"]["image"]  # (B, V, 3, H, W)
-            # Use first view of first scene as test image.
-            test_image = (real_images[0, 0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-            print(f"  Loaded real image from MVSplat Re10k loader: {test_image.shape}")
-        except Exception as e:
-            print(f"  WARNING: Could not load real image ({e}), using synthetic.")
-            h_img, w_img = 480, 640
-            test_image = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
-    else:
-        # Create a synthetic test image.
+    # Load test images from data/public/ or use synthetic fallback.
+    public_dir = _REPO_ROOT / "data" / "public" / "re10k_samples"
+    test_image = _load_real_image(public_dir) if public_dir.exists() else None
+    if test_image is None:
         h_img, w_img = 480, 640
         test_image = np.random.randint(0, 255, (h_img, w_img, 3), dtype=np.uint8)
+        print("  Using synthetic image (no public data found).")
+    else:
+        print(f"  Loaded real image: {test_image.shape}")
 
     seg_result = seg.segment(test_image, box_prompt=False)
 
@@ -422,8 +418,13 @@ def main() -> None:
             )
             is_real_vggt = False
 
-    # Provide 2 views (duplicate the test image if only 1 real image available).
-    bg_images = [test_image.copy() for _ in range(2)]
+    # Provide real multi-view images if available, else duplicate.
+    real_imgs = _load_real_images(public_dir, n=2)
+    if real_imgs is not None:
+        bg_images = real_imgs
+        print(f"  Using {len(bg_images)} real Re10k views for VGGT.")
+    else:
+        bg_images = [test_image.copy() for _ in range(2)]
     bg_result = bg.infer(bg_images)
 
     stage_times["background"] = round(time.perf_counter() - t0, 4)

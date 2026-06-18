@@ -95,11 +95,16 @@
 **Baseline 结论**：fused grid: FG/BG IoU=0.052, BEV coverage 1.88%（动态 grid 的 85.5% 是压缩 grid 范围的假象），costmap 55% lethal, 75% drivable conflict。三个机制性失败阻止 BEV 可用——见 `docs/current_issues.md`。
 
 ### Phase B：MVSplat Decoder Head Retraining（当前）
-- [ ] 添加 occupancy head（sigmoid, 输出 0=free/1=occupied）
+- [x] **Occupancy Head POC 实验** (2026-06-19) — 证明 post-hoc MLP 不够
+  - VGGT depth 投影→ per-Gaussian label (occ 2.6%, free 68.9%, unknown 28.5%, 71.5% trainable)
+  - MLP 训练收敛 (val acc 96.5%) 但无法提升 BEV (coverage 全部 <1%)
+  - **根因**: MVSplat Gaussian 位置本身不对（为渲染优化，非几何准确）→ 仅 2.6% 靠近 VGGT 表面
+  - **结论**: 需要 decoder 端到端重训练，几何 loss 需反向传播到 Gaussian means（不能 post-hoc label）
+- [ ] 在 MVSplat Gaussian adapter 内添加 occupancy head（联合 means/scales/opacity 一起训练）
 - [ ] 添加 semantic head（per-Gaussian class logits）
 - [ ] 添加 confidence head（epistemic uncertainty）
 - [ ] 训练损失：L_depth(VGGT) + L_occ + L_semantic(SAM2) + λ·L_color
-- [ ] Freeze MVSplat encoder（cost volume），只训练 decoder head
+- [ ] Freeze MVSplat encoder（cost volume），训练 decoder head + Gaussian adapter
 - [ ] 训练数据：Re10k 场景 → (图像, VGGT 几何监督) 对
 - [ ] 验证：对比 baseline opacity vs retrained occupancy 的 BEV 质量
 

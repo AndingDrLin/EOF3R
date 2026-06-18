@@ -624,6 +624,14 @@ export https_proxy=http://192.168.213.103:53941
 - Workaround for scripts: `source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`
 - Interactive terminals work correctly (`.bashrc` conda init block is in place)
 
+### Phase B POC Results (2026-06-19)
+**Occupancy Head experiment** (`test_occupancy_head.py`):
+- Post-hoc MLP occupancy head on existing MVSplat Gaussians does NOT improve BEV
+- Root cause: only 2.6% of MVSplat Gaussians are near VGGT surfaces (at 0.3m depth tolerance)
+- 68.9% are in free space, 28.5% behind surfaces — Gaussian positions are rendering-optimized, not geometry-accurate
+- **Conclusion**: Phase B requires joint retraining of Gaussian positions + occupancy head, not a post-hoc classifier
+- VGGT depth projection labeling is a viable supervision strategy (71.5% of Gaussians labelable as occ/free)
+
 ---
 
 ## Quick Reference: Key Documents

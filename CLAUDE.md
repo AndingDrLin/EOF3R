@@ -61,21 +61,25 @@ bash scripts/setup_mvsplat.sh
 ### Environment
 
 ```bash
-# eof3r env not yet created. Workaround: use baseline envs.
-conda activate mvsplat     # for foreground inference (torch 2.1 + CUDA 11.8)
-conda activate depthsplat  # alternative feedforward 3DGS env
+# Single unified environment (2025-06-18)
+conda activate eof3r  # Python 3.10 + torch 2.5.1 + CUDA 12.1 + all models
 
-# To create eof3r proper:
-conda create -n eof3r python=3.10 -y
-conda activate eof3r
-pip install -r requirements.txt
-pre-commit install
+# To recreate from scratch:
+conda create -n eof3r python=3.10 -y && conda activate eof3r
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e baselines/sam2/
+pip install -e baselines/vggt/
+pip install -e baselines/mvsplat/  # not a pip pkg — install deps manually
+# For full deps list, inspect the install commands in memory or docs/current_issues.md.
+
+# GPU: NVIDIA RTX A6000 (48GB), peak VRAM ~6.3GB (VGGT + MVSplat together)
 ```
 
-### Known Blockers
+### Known Blockers (as of 2025-06-18)
 
-- **SAM2 / VGGT cannot be cloned** from current network — GitHub TLS handshake failure. Both use stubs (`SAM2Stub`, `VGGTStub`) that generate synthetic data for pipeline testing. Replace with real wrappers after cloning from a network that can reach GitHub.
-- **MVSplat real inference** requires GPU + `baselines/mvsplat/checkpoints/re10k.ckpt`. The test script flags `--skip-mvsplat` for CI/testing without GPU.
+- ~~SAM2/VGGT cannot be cloned~~ → **Resolved.** Cloned via network proxy (192.168.213.103:53941).
+- ~~eof3r env not created~~ → **Resolved.** All three real models (SAM2, VGGT, MVSplat) verified in eof3r.
+- **Only remaining blocker**: no campus rosbag. Public Re10k dataset used as substitute for E2E validation.
 
 ### Config-driven Experiments
 

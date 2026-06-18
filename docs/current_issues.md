@@ -5,34 +5,19 @@
 
 ---
 
-## 问题 1：Fusion BEV 投影速度（P0）
+## ~~问题 1：Fusion BEV 投影速度（P0）~~ ✅ 已解决 (2025-06-18)
 
-**现象**：VGGT-1B 输出约 190k 个 3D 点，`bev_projector.project_gaussians_to_bev()` 使用 Python for 循环逐点投影到 400×400 BEV 网格，耗时 130s。
+**现象**：VGGT-1B 输出约 190k 个 3D 点，Python for 循环逐点投影耗时 130s。
 
-**根因**：`bev_projector.py` 第 106-125 行的逐高斯球遍历 + 逐 cell 写入是纯 Python `for i in range(N)`。
+**根因**：`bev_projector.py` 逐高斯球遍历 + 逐 cell 写入纯 Python 循环。
 
-**解决方案**：
+**解决方案（已实施）**：
+- `np.bincount` scatter（替代逐点遍历，O(N) 复杂度）
+- `scipy.ndimage.gaussian_filter`（替代逐点 Gaussian footprint 扩展）
+- 后 smooth re-normalization（保持 peak occupancy 不稀释）
+- **结果：130s → 0.2s（650x 加速），总 pipeline 从 151.5s → 21.3s**
 
-方案 A（推荐）— **numpy 矢量化 scatter**：
-```python
-# 用 np.histogram2d 替代逐点遍历
-cols = ((mx - x_min) / resolution).astype(np.int32)
-rows = ((my - y_min) / resolution).astype(np.int32)
-# 过滤 + 2D 直方图加权
-valid = (cols >= 0) & (cols < w) & (rows >= 0) & (rows < h)
-bev = np.histogram2d(rows[valid], cols[valid], bins=(h, w),
-                      weights=opacities[valid])[0]
-```
-
-方案 B — **CUDA kernel**（如方案 A 不够快）：
-用 `torch.scatter_add` 或写一个简单的 CUDA 核函数，所有点并行写入 BEV grid，利用 atomic operations。
-
-方案 C — **稀疏采样**：
-VGGT 的 190k 点中有大量冗余（逐像素密集点云）。先用 `np.random.choice` 采样到 10k 点再投影，精度损失 <5%。
-
-**预期**：方案 A → <1s，方案 B → <100ms。
-
-**实施状态**：待实施
+**实施状态**：✅ 已完成
 
 ---
 

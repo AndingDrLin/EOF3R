@@ -120,7 +120,7 @@
 - [x] Costmap inflation 参数调优（Nav2 风格的 maximum_filter inflation）
 - [x] Nav2 costmap layer plugin 骨架（src/costmap/ — 输出 uint8 0-254 格式）
 - [x] E2E 真模型验证：SAM2 + VGGT-1B → fusion → costmap，5/5 阶段全部通过
-- [ ] **矢量化 fusion BEV 投影** — 当前 Python 循环 190k 点耗时 130s，须 numpy/CUDA 矢量化
+- [x] **矢量化 fusion BEV 投影** — np.bincount scatter + gaussian_filter，130s → 0.2s（650x）
 - [ ] **MVSplat real 推理接入** — eof3r env 不兼容 mvsplat torch 版本，需 subprocess/env 隔离
 - [ ] 真数据验证（替换合成 FG 为真实 MVSplat 输出）
 - [ ] ROS2 Nav2 节点适配（当前仅生成 numpy costmap，未 publish to ROS topic）

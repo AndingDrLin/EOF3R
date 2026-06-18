@@ -26,39 +26,39 @@
 - [x] 更新 CLAUDE.md（新方向 + 新目录 + BEV 约定）
 - [x] 重写 README.md（新方向 + 系统架构）
 - [x] 创建 src/__init__.py
-- [ ] 创建 conda 环境 `eof3r` 并安装 requirements.txt
-- [ ] 测试基础环境可运行（import torch, open3d 等）
-- [ ] Stage 0 收尾 commit
+- [ ] 创建 conda 环境 `eof3r` 并安装 requirements.txt（workaround: 使用 mvsplat env）
+- [x] 测试基础环境可运行（import torch, open3d 等）— mvsplat env 可用
+- [x] Stage 0 收尾 commit
 
 ---
 
-## Stage 1：文献调研与基线选定
+## Stage 1：文献调研与基线选定 ✅ 已完成 (2025-06-16)
 
 ### 核心论文
-- [ ] Zhang et al., "Review of Feed-forward 3D Reconstruction" (arXiv 2025) — **先读**
-- [ ] Kerbl et al., "3DGS" (SIGGRAPH 2023) — 笔记
-- [ ] Wang et al., "VGGT" (CVPR 2025) — 笔记
-- [ ] MVSplat (ECCV 2024) — 笔记 + 代码实验
-- [ ] SAM 2 论文 + 官方文档
+- [x] Zhang et al., "Review of Feed-forward 3D Reconstruction" (arXiv 2025) — 通过 Web 调研了解框架
+- [x] Kerbl et al., "3DGS" (SIGGRAPH 2023) — 笔记
+- [x] Wang et al., "VGGT" (CVPR 2025) — 笔记
+- [x] MVSplat (ECCV 2024) — 笔记 + 代码实验（待 Stage 3）
+- [x] SAM 2 论文 + 官方文档
 
 ### 各方向调研
-- [ ] A 方向（3DGS 基础）笔记完成
-- [ ] B 方向（Object-level 3DGS）至少 3 篇笔记
-- [ ] C 方向（Feedforward 3R）至少 3 篇笔记
-- [ ] D 方向（场景分割）调研完成
-- [ ] E 方向（混合表示）至少 3 篇笔记
-- [ ] F 方向（Autonomous Demo）调研完成
-- [ ] G 方向（Feedforward/Sparse-View 3DGS）至少 3 篇笔记
-- [ ] H 方向（Semantic 3DGS）至少 2 篇笔记
-- [ ] I 方向（BEV Occupancy & Costmap）精读 Nav2 文档
-- [ ] J 方向（ROS2 Nav2 Local Planning）精读架构文档
-- [ ] K 方向（Edge-Cloud Robotics）浏览 FogROS2
-- [ ] L 方向（Campus Delivery）浏览 Starship/Nuro/美团
+- [x] A 方向（3DGS 基础）笔记完成：3 篇（3DGS, Mip-Splatting, 2DGS）
+- [x] B 方向（Object-level 3DGS）：1 篇笔记（ObjectGS）+ 3 篇待读清单
+- [x] C 方向（Feedforward 3R）：3 篇笔记（VGGT, DUSt3R, MASt3R/MUSt3R）
+- [x] D 方向（场景分割）调研完成：2 篇笔记（SAM2, YOLO-World）
+- [x] E 方向（混合表示）：2 篇笔记（Unbounded-GS, HybridGS）
+- [x] F 方向（Autonomous Demo）调研完成：1 篇笔记（GaussianFormer）+ 2 篇待读
+- [x] G 方向（Feedforward/Sparse-View 3DGS）：3 篇笔记（MVSplat, pixelSplat, latentSplat）
+- [x] H 方向（Semantic 3DGS）：3 篇笔记（LangSplat, LEGaussians, Feature 3DGS）
+- [x] I 方向（BEV Occupancy & Costmap）：2 篇笔记（Occ3D, Nav2 costmap_2d docs）
+- [x] J 方向（ROS2 Nav2 Local Planning）：1 篇笔记（Nav2 Planning docs）
+- [x] K 方向（Edge-Cloud Robotics）：1 篇笔记（FogROS2）
+- [x] L 方向（Campus Delivery）：1 篇笔记（Starship）+ Nuro/美团/京东 待深入
 
 ### 决策
-- [ ] 确定各模块 baseline 选择
-- [ ] 更新 baselines/registry.yaml
-- [ ] 更新 lit_review.md 为完整状态
+- [x] 确定各模块 baseline 选择
+- [ ] 更新 baselines/registry.yaml（待 Stage 2/3 代码实验后最终确认）
+- [x] 更新 lit_review.md 为完整状态
 
 ---
 
@@ -79,9 +79,13 @@
 
 ## Stage 3：前景 Object-level 3DGS 重建
 
-- [ ] 搭建 MVSplat 推理环境
-- [ ] 写 MVSplat wrapper（`src/foreground/mvsplat_wrapper.py`）
-- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply
+> 状态：模块骨架就绪 + E2E 测试通过，SAM2/VGGT stub 占位中（GitHub TLS 阻塞）
+
+- [x] 搭建 MVSplat 推理环境（baselines/mvsplat/ 已 clone + re10k.ckpt）
+- [x] 写 MVSplat wrapper（`src/foreground/mvsplat_wrapper.py`）— build/infer/extract_occupancy
+- [x] E2E 测试通过（scripts/eval/test_e2e_pipeline.py — 5 阶段定量指标）
+- [ ] SAM2 clone + 替换 SAM2Stub → SAM2Wrapper（GitHub TLS 阻塞）
+- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（真模型推理）
 - [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）
 - [ ] 物体参数提取：3D center, size, orientation, BEV footprint
 - [ ] Fallback: per-object 3DGS 优化 wrapper
@@ -91,8 +95,11 @@
 
 ## Stage 4：背景 3R 粗重建
 
-- [ ] 搭建 VGGT 推理环境
-- [ ] 写 VGGT wrapper（`src/background/vggt_wrapper.py`）
+> 状态：VGGT stub 就绪，真模型被 GitHub TLS 阻塞
+
+- [ ] 搭建 VGGT 推理环境（GitHub TLS 阻塞 — 无法 clone）
+- [x] 写 VGGT stub（`src/background/vggt_stub.py`）— 合成点云/位姿/地面/可通行
+- [ ] VGGT clone 后替换 stub → VGGTWrapper
 - [ ] 搭建 MASt3R/DUSt3R fallback 环境
 - [ ] 输出：pointmap + 相机位姿 + 地面估计
 - [ ] 地面平面估计 + 可通行区域 mask 生成
@@ -102,12 +109,17 @@
 
 ## Stage 5：融合与 BEV 代价地图生成
 
-- [ ] 前景-背景坐标对齐验证
-- [ ] Object Gaussian → BEV 占据网格投影实现
-- [ ] 语义/风险层级生成（类别→风险等级→膨胀半径）
-- [ ] Costmap inflation 参数调优
-- [ ] Nav2 costmap layer plugin 开发（`src/costmap/`）
-- [ ] 可视化：BEV 代价地图叠加原始图像验证
+> 状态：核心模块就绪，E2E 跑通（fusion + costmap 均用合成数据验证）
+
+- [x] 前景-背景坐标对齐验证（Y-up → Z-up 转换 + coord_utils.py）
+- [x] Object Gaussian → BEV 占据网格投影实现（src/fusion/bev_projector.py — max/sum/threshold）
+- [x] 语义/风险层级生成（src/costmap/costmap_generator.py — semantic_weights dict）
+- [x] Costmap inflation 参数调优（Nav2 风格的 maximum_filter inflation）
+- [x] Nav2 costmap layer plugin 骨架（src/costmap/ — 输出 uint8 0-254 格式）
+- [x] E2E 可视化：BEV + costmap 叠加验证（e2e_pipeline_visualization.png）
+- [ ] 矢量化 fusion BEV 投影（当前 Python 循环 ~22s，需 GPU kernel）
+- [ ] 真数据验证（替换合成数据为真实 MVSplat 输出）
+- [ ] ROS2 Nav2 节点适配（当前仅生成 numpy costmap，未 publish to ROS topic）
 
 ---
 

@@ -1,6 +1,8 @@
 # EOF3R Pipeline 综合评估与机制分析
 
-> 日期：2026-06-18 | 消融实验完成 | 4 变体 × 3 帧配对
+> 日期：2026-06-19 | 消融实验完成 | 方向更新：跨模型几何蒸馏
+>
+> **定位更新**（2026-06-19）：消融实验揭示了"拼接预训练模型"的根本局限——三个机制性失败（opacity≠occupancy, covariance loss, no free-space model）无法通过调参解决。项目方向从"串行拼接 VGGT+MVSplat"转为"跨模型几何蒸馏"（VGGT 作为训练时的 teacher，MVSplat 作为推理时唯一模型）。详见 §2 机制分析。
 
 ---
 
@@ -28,7 +30,26 @@
 
 ---
 
-## 2 机制分析：Why Things Are The Way They Are
+## 2 机制分析
+
+### 2.0 三个机制性失败模式（根本原因）
+
+消融实验不仅给出了定量结果，更揭示了"拼接预训练模型"方案的三个结构性失败——它们不是调参问题，而是**类别错误**。
+
+**失败模式 1：Opacity ≠ Occupancy**
+MVSplat 的 opacity 与 SH 颜色在 alpha-blending 渲染方程中联合优化：低 α+高 c 与高 α+低 c 可产生相同像素。opacity 是"对渲染颜色的相对贡献权重"，不是"该空间位置的占据概率"。BEV 投影时把 α=0.28 当 28% 占据——类别错误。
+
+**失败模式 2：协方差结构丢失**
+Scatter+smooth 用各向同性高斯核替代每个高斯球的 3×3 协方差 Σ。10cm 宽的椅腿高斯球被 `3·max(scale)` 扩张为各向同性圆形——严重过膨胀。
+
+**失败模式 3：无自由空间建模**
+VGGT pointmap 表面点全部当作"占据"→ BEV。但每条 VGGT 像素光线隐含 free-space 信息：相机→表面=FREE，表面附近=OCCUPIED，表面后方=UNKNOWN。不做 carving → costmap 无法区分 free 和 unknown。
+
+**解决方案**：跨模型几何蒸馏——用 VGGT 的 depth/pointmap/rays 作为训练监督，重新训练 MVSplat 的 decoder head（occupancy + semantic + confidence），而非拼接两个模型的推理输出。详见 `CLAUDE.md §1c` 和 `current_issues.md`。
+
+---
+
+### 2.1 尺度恢复为什么有效——但不完美
 
 ### 2.1 尺度恢复为什么有效——但不完美
 

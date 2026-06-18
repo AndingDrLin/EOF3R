@@ -69,75 +69,76 @@
 
 ---
 
-## Stage 3：前景 G2O-inspired Feedforward Gaussian Occupancy（第 7-10 周）
+## Stage 3：跨模型几何蒸馏 — Planning-Oriented 前馈高斯占据（核心创新）
 
-> 与 Stage 4 可部分并行（第 8-10 周重叠）
-> 核心方法：融合 G2O 几何约束思想的前馈式 object-level Gaussian occupancy 预测。
-> 前景与背景分开表示；前景负责物体级占据、语义、风险和 footprint，背景由 Stage 4 负责粗几何、free-space、unknown-space 与 occlusion boundary。
-> 不使用逐场景 30k 迭代优化，不使用高阶 SH/view-dependent color 作为核心输出。
-
-### 优先路线：G2O-inspired Feedforward Gaussian Occupancy
-
-- [x] 搭建 MVSplat 前馈推理 pipeline（wrapper: build/infer/extract_occupancy）
-- [ ] 引入 G2O 思想：geometry scaffold 约束前馈 decoder、opacity/confidence-aware 高斯筛选（训练阶段，待 implement）
-- [x] 输入：RGB 多帧图像（2-4 视角）— 当前用 Re10k 全图验证
-- [x] 输出：Gaussian primitives（means, opacities, scales, covariances）— 坐标系统待校准
-- [ ] 核心损失：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence（训练阶段）
-- [ ] 辅助损失：L_rgb（权重 0.1，仅用于诊断）
-- [ ] 评估几何/占据精度（Chamfer, F-Score, Footprint IoU）— 坐标校准后进行
-
-### Fallback 路线：Per-Object 优化 3DGS + 后处理提取 Occupancy
-
-- [ ] 如果 feedforward 质量不够，回退到每个物体独立训练 3DGS
-- [ ] 从优化后的 3DGS 中后处理提取 occupancy_alpha、BEV footprint
-- [ ] 仍比全场景训练快（单个物体 + 少量迭代）
-
-### 产出
-
-- [x] 前景 Gaussian occupancy 模块（`src/foreground/mvsplat_wrapper.py`）
-- [x] Gaussian 输出（GaussianData dataclass 含 means, opacities, scales, covariances）
-- [x] E2E 测试脚本（`scripts/eval/test_e2e_pipeline.py`，38 个定量指标）
-
----
-
-## Stage 4：背景 3R / VGGT-like 前馈世界表征估计（第 8-10 周）
-
-> 与 Stage 3 可部分并行。目标是从 RGB、LiDAR / depth、odometry 等多模态输入中端到端预测背景状态描述（pointmap + 地面 + free-space + unknown-space + occlusion boundary + 可通行区域），不是逼真背景渲染。
+> 不再"拼接"VGGT+MVSplat 做推理。改为用 VGGT 的几何输出 **训练** MVSplat 的新 decoder head。
+> VGGT 是训练时的 teacher，MVSplat 是推理时的唯一模型。
 
 ### 路线
 
-- [x] 搭建 VGGT 推理 pipeline（wrapper: VGGT.from_pretrained, 6D 位姿解码, 地面估计）
-- [x] 输入：场景全图 — Re10k 4 帧 720p 图像
-- [x] 输出：dense pointmap + 相机位姿 + 地面平面估计 + 可通行区域 mask
-- [ ] 坐标系统一到项目约定（右手 Y-up）— 🔴 当前核心问题（BEV coverage 0.45%）
-- [ ] 可选：将 3R pointmap 作为 Stage 3 前馈 decoder 的 geometry hint
-- [ ] Fallback: DUSt3R/MASt3R（待搭建）
+- [x] Phase A：Sequential Baseline — 三模型串行推理（用于消融对比）
+  - [x] MVSplat wrapper: build/infer/extract_occupancy
+  - [x] VGGT wrapper: from_pretrained + 6D 位姿解码 + 地面估计
+  - [x] 坐标对齐（OpenCV→Y-up）+ scale recovery
+  - [x] 消融实验（4 变体 × 3 帧配对）
+- [ ] Phase B：MVSplat Decoder Retraining — 用 VGGT 几何信号训练新 head
+  - [ ] 添加 occupancy head（sigmoid, 输出 0=free / 1=occupied）
+  - [ ] 添加 semantic head（per-Gaussian class logits）
+  - [ ] 添加 confidence head（epistemic uncertainty）
+  - [ ] 损失：L_depth(VGGT) + L_occ + L_semantic(SAM2 masks) + λ·L_color
+  - [ ] Freeze MVSplat encoder（cost volume），只训练 decoder head
+- [ ] Phase C：可微 BEV 边缘化 + Free-Space Carving
+  - [ ] 将 numpy BEV 投影替换为 torch 可微操作
+  - [ ] 解析 Σ→XZ 投影（保留协方差结构）
+  - [ ] VGGT 光线 free-space carving（FREE/OCCUPIED/UNKNOWN 三值）
+- [ ] Phase D：端到端 Planning Loss
+  - [ ] costmap 质量指标作为可微损失
+  - [ ] backprop 到 Gaussian 参数
 
 ### 产出
 
-- [x] 背景几何估计模块（`src/background/vggt_wrapper.py` + `vggt_stub.py`）
-- [x] 背景 pointmap + 地面平面 + 相机 pose
+- [x] Sequential baseline 代码（`src/foreground/mvsplat_wrapper.py`）
+- [x] 消融实验脚本与结果（`ablation_study.py`, `ablation_summary.json`）
+- [ ] MVSplat decoder head（occupancy + semantic + confidence）
+- [ ] VGGT 几何监督数据 pipeline
+- [ ] 可微 BEV 投影模块
+- [ ] 论文三消融实验
 
 ---
 
-## Stage 5：融合与 BEV 代价地图生成（第 10-12 周）
+## Stage 4：VGGT 几何监督提取（角色转变）
+
+> VGGT 从"推理阶段"转变为"训练监督源"。
+> 不再在推理时运行 VGGT，只在训练时用它提取 depth/pointmap/free-space rays。
 
 ### 路线
 
-- [ ] 前景-背景坐标对齐 — 🔴 当前核心问题，MVSplat/VGGT 坐标系不一致
-- [x] Gaussian occupancy → BEV 占据网格投影算法（矢量化 bincount + gaussian_filter, 650x 加速）
-- [x] 融合 object-level 前景表示与背景状态表示（架构就绪，坐标校准后验证）
-- [x] 统一输出：BEV occupancy、semantic costmap（架构就绪）
-- [x] 语义/风险层级生成（类别 → 风险等级 → 膨胀半径，semantic_weights 已定义）
-- [x] Nav2 兼容的 uint8 costmap 格式输出（0=free, 254=lethal, 255=unknown）
-- [ ] Nav2 costmap layer plugin（ROS2 节点适配 — 待 Stage 6）
-- [x] 可视化：E2E pipeline 可视化（`e2e_pipeline_visualization.png`）
+- [x] VGGT 推理 pipeline 搭建完成
+- [x] Depth / pointmap / 相机位姿提取
+- [x] 坐标系统一（OpenCV→Y-up）+ scale recovery
+- [x] 地面平面估计 + 可通行区域
+- [ ] **提取训练监督信号**：
+  - [ ] Per-pixel depth → binary silhouette（occupancy 监督）
+  - [ ] Pointmap → 3D 点密度约束（scale 正则化）
+  - [ ] Free-space rays → FREE/OCCUPIED/UNKNOWN mask（三值监督）
+- [ ] 构建训练数据集：Re10k 场景 → (图像, VGGT 几何监督) 对
 
 ### 产出
 
-- [x] 融合模块（`src/fusion/bev_projector.py` + `coord_utils.py`）
-- [x] Costmap 生成模块（`src/costmap/costmap_generator.py`）
-- [ ] Nav2 costmap layer plugin（待 ROS2 集成）
+- [x] VGGT wrapper（`src/background/vggt_wrapper.py`）
+- [ ] 训练数据预处理脚本（`scripts/preprocess/extract_vggt_supervision.py`）
+- [ ] 几何监督 dataloader
+
+---
+
+## Stage 5：语义 + BEV + Costmap 输出
+
+- [x] YOLO+SAM2 → 真实 COCO 语义标签（训练监督）
+- [x] 动态 BEV grid + Nav2 costmap 生成（baseline 版本）
+- [ ] 可微 BEV 投影（Phase C，替代 numpy 版本）
+- [ ] Semantic BEV：per-Gaussian class → 投票→ BEV semantic grid
+- [ ] Nav2 costmap layer plugin（ROS2 集成 — Stage 6）
+- [ ] 3 消融实验 + 定量评估
 
 ---
 

@@ -8,15 +8,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **EOF3R** — Efficient Object-level Feedforward 3D Reconstruction with 3DGS.
 
+**核心创新**：将 feedforward 3DGS 从 photorealistic 渲染工具改造为 planning-oriented 几何-语义占据预测器。不是"拼接预训练模型"，而是**跨模型几何蒸馏（cross-model geometric distillation）**——用一个前馈几何模型（VGGT）的输出作为另一个前馈渲染模型（MVSplat）的训练监督信号，使后者学会预测 metric-scale 占据而非逼真颜色。
+
 **Despite the name, the project produces planning-oriented Gaussian occupancy, not photorealistic images.**
 
-本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。融合 G2O 几何约束思想的前馈式 object-level Gaussian occupancy 方法：
+本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。
 
-物体分离（SAM2）→ 背景 3R 粗几何估计（VGGT/MASt3R）→ 前景 G2O-inspired feedforward Gaussian occupancy 预测（occupancy_alpha, footprint, semantic, confidence）→ 融合 → BEV semantic costmap → 本地规划器避障与路径选择。
+**方法本质**：
+- **训练时**：VGGT 提供 depth、free-space ray、pointmap 作为几何监督 → MVSplat 学习用 Gaussian primitives 预测 occupancy + semantic + confidence（而非 opacity + SH + color）
+- **推理时**：只需要 MVSplat（单模型，前馈）→ 直接从 RGB 输出 metric-scale BEV 占据 + 语义 costmap
+- VGGT 是"几何老师"，不是"pipeline 阶段"——这是与"拼接方案"的本质区别
+
+**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端运行改造后的 MVSplat（单模型前馈推理）。SAM2/YOLO 提供 2D mask 监督（训练时），VGGT 提供几何监督（训练时）。推理时只跑 MVSplat + 轻量分割，输出 BEV occupancy + semantic costmap。
 
 **系统不追求逼真重建，而追求更可靠、更适合规划的几何-语义表示。**
-
-**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端负责高算力异步推理（SAM2 分割细化 / 3R 背景几何估计 / G2O-inspired feedforward Gaussian occupancy / 语义 costmap 生成）。云端结果是 planning enhancement，不直接控制车辆。云端返回的是 lightweight planning-oriented representation（object state, 3D bbox, BEV footprint, semantic label, risk score, confidence, costmap patch），不是完整 Gaussian 渲染模型。
 
 ### 语言铁律
 
@@ -71,11 +76,11 @@ pip install -r eof3r/requirements.txt
 # GPU: NVIDIA RTX A6000 (48GB), peak VRAM ~6.3GB (VGGT + MVSplat together)
 ```
 
-### Known Blockers (as of 2026-06-18)
+### Known Blockers (as of 2026-06-19)
 
-- ~~SAM2/VGGT cannot be cloned~~ → **Resolved.** Cloned via network proxy (192.168.213.103:53941).
-- ~~eof3r env not created~~ → **Resolved.** All three real models (SAM2, VGGT, MVSplat) verified in eof3r.
-- **Only remaining blocker**: no campus rosbag. Public Re10k dataset used as substitute for E2E validation.
+- ~~环境搭建、模型安装、数据准备~~ → **全部 Resolved。**
+- **当前核心 Blocker**：MVSplat 输出的是 photorealistic Gaussian primitives（opacity 与颜色纠缠、scale 无物理约束、缺失自由空间建模）→ BEV 投影不可用。解决方向：用 VGGT 的几何信号重新训练 MVSplat 的 decoder head（见 §1c 和 `docs/current_issues.md`）。
+- **次要 Blocker**：无校园 rosbag。公开数据集 Re10k 作为验证替代。
 
 ### Config-driven Experiments
 
@@ -83,61 +88,73 @@ All experiments are driven by YAML configs inheriting from `eof3r/configs/defaul
 
 ---
 
-## §1c Pipeline Architecture
+## §1c Architecture: Cross-Model Geometric Distillation
 
-The system runs a **4-stage pipeline**. Each stage maps to a `eof3r/src/` module:
+### The Fundamental Insight
+
+Prior work concatenates feedforward models as sequential inference stages (SAM2→VGGT→MVSplat→fusion).  This suffers from three mechanistic failures when projecting Gaussian primitives to BEV:
+
+1. **Opacity-Occupancy Mismatch**: MVSplat's opacity is optimised for alpha-blending with colour — low α + high SH can produce the same pixel as high α + low SH.  Opacity is a *rendering weight*, not an *occupation probability*.  Treating it as occupancy is a category error.
+
+2. **Covariance Information Loss**: Scatter+smooth BEV projection discards the full 3×3 covariance Σ of each Gaussian.  An anisotropic Gaussian (e.g., 10cm-wide chair leg, 1m tall) gets isotropically inflated to `3·max(scale)` in BEV.
+
+3. **Missing Free-Space Modelling**: VGGT pointmap gives surface points, but ray-based free-space carving (camera→surface = FREE, surface vicinity = OCCUPIED, behind surface = UNKNOWN) is never performed.  The costmap cannot distinguish free from unknown.
+
+These failures are NOT fixable by tuning — they stem from a category mismatch: **photorealistic primitives ≠ planning-oriented primitives**.
+
+### The Approach: VGGT as Teacher, MVSplat as Student
 
 ```
-Input: RGB images + camera intrinsics
-       │
-       ▼
-┌─────────────────┐
-│  segmentation/   │  SAM2 / YOLO → per-object masks + class labels
-└────────┬────────┘
-         │ foreground masks, background region
-         ├──────────────────────────────┐
-         ▼                              ▼
-┌─────────────────┐           ┌─────────────────┐
-│  foreground/     │           │  background/     │
-│  MVSplat / 3DGS  │           │  VGGT / MASt3R  │
-│  → per-object    │           │  → coarse pointmap
-│  Gaussian        │           │    + ground plane
-│  occupancy       │           │    + traversable
-└────────┬────────┘           └────────┬────────┘
-         │                              │
-         └──────────┬───────────────────┘
-                    ▼
-           ┌─────────────────┐
-           │  fusion/         │  Align coords (Y-up → Z-up), BEV projection,
-           │                  │  Gaussian → occupancy grid
-           └────────┬────────┘
-                    ▼
-           ┌─────────────────┐
-           │  costmap/        │  BEV semantic costmap → ROS2 Nav2
-           │                  │  (inflation, semantic weights, risk scores)
-           └────────┬────────┘
-                    ▼
-           ┌─────────────────┐
-           │  communication/  │  Vehicle ↔ cloud async bridge
-           └─────────────────┘
+                     TRAINING                          │            INFERENCE
+                                                       │
+  ┌──────┐    ┌──────┐                                 │   ┌──────┐
+  │ SAM2 │    │ VGGT │  ← both provide SUPERVISION     │   │ RGB  │
+  └──┬───┘    └──┬───┘                                 │   └──┬───┘
+     │2D masks   │depth, pointmap, free-space rays     │      │
+     │           │                                      │      ▼
+     ▼           ▼                                      │   ┌──────────┐
+  ┌──────────────────────────────┐                      │   │  MVSplat │
+  │         MVSplat              │  ← train decoder     │   │ (infer)  │
+  │  freeze: encoder (cost vol) │    heads with         │   └───┬──────┘
+  │  retrain: occupancy head    │    geometric loss     │       │
+  │           semantic head     │                       │       ▼
+  │           confidence head   │                       │   ┌──────────┐
+  └──────────────────────────────┘                      │   │   BEV    │
+                                                        │   │occupancy │
+  L_total = L_depth + L_occ + L_free + L_semantic       │   │+semantic │
+            + λ·L_color  (λ=0.1, auxiliary only)        │   │+costmap  │
+                                                        │   └──────────┘
 ```
 
-**Key interfaces between modules (actual class names):**
-- `segmentation` → `foreground`: object masks (SAM2Wrapper/SAM2Stub → MVSplatWrapper)
-- `segmentation` → `background`: background region mask (SAM2Wrapper/SAM2Stub → VGGTWrapper/VGGTStub)
-- `foreground` / `background` → `fusion`: aligned 3D Gaussians (numpy) / pointmaps in shared Y-up coords
-- `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame (BEVProjector → CostmapGenerator)
-- `costmap` → ROS2: uint8 costmap array (0=free, 254=lethal), not yet published to ROS topic
+**VGGT is a training-time geometry teacher, not an inference-time pipeline stage.**  At inference, only MVSplat runs — a single feedforward model directly predicting planning-oriented occupancy from RGB.
 
-**Stub vs Real Status (as of 2026-06-18):**
-| Module | File | Status |
-|--------|------|--------|
-| segmentation | `sam2_wrapper.py` | 🟢 Real SAM2 via HuggingFace (auto-download), fallback to `sam2_stub.py` |
-| foreground | `mvsplat_wrapper.py` | 🟢 Real MVSplat wrapper (build/infer/extract_occupancy) |
-| background | `vggt_wrapper.py` | 🟢 Real VGGT via HuggingFace (auto-download), fallback to `vggt_stub.py` |
-| fusion | `bev_projector.py`, `coord_utils.py` | 🟢 Real (Y-up→Z-up, BEV projection, FG/BG fusion) |
-| costmap | `costmap_generator.py` | 🟢 Real (Nav2 uint8 format, semantic weights, inflation) |
-| communication | `__init__.py` only | 🔴 Empty stub |
+### Three Principled Interventions
+
+| # | Failure Mode | Intervention | Supervision |
+|---|-------------|-------------|-------------|
+| 1 | Opacity ≠ Occupancy | Replace opacity head with **occupancy head** (sigmoid output, 0=free, 1=occupied) | VGGT depth → silhouette loss (binary: is there a surface at this depth?) |
+| 2 | Covariance discarded | **Differentiable BEV marginalization** — analytically project Σ to XZ plane, preserving anisotropy | VGGT pointmap density → constrain scale to physically plausible range |
+| 3 | No free-space model | **Ray-based carving** — for each VGGT ray, label space BEFORE surface as FREE, AT surface as OCCUPIED, BEHIND as UNKNOWN | VGGT depth rays + pointmap |
+
+### Current Code Status (as of 2026-06-19)
+
+The `eof3r/src/` modules currently implement the **sequential concatenation baseline** (for ablation comparison):
+
+| Module | File | Purpose (Baseline) | Purpose (Target) |
+|--------|------|--------------------|--------------------|
+| segmentation | `sam2_wrapper.py` | Inference-stage segmentation → masks | Training supervision: 2D masks for semantic loss |
+| foreground | `mvsplat_wrapper.py` | Inference-stage feedforward Gaussians | **Unified inference model** (occupancy+semantic+confidence) |
+| background | `vggt_wrapper.py` | Inference-stage geometry estimation | **Training supervision**: depth, pointmap, free-space rays |
+| fusion | `bev_projector.py`, `coord_utils.py` | numpy BEV projection | → Replace with differentiable BEV marginalization |
+| costmap | `costmap_generator.py` | Post-processing costmap | Train-time planning loss |
+| communication | `__init__.py` only | 🔴 Empty stub | Vehicle↔cloud bridge |
+
+### Implementation Roadmap
+
+- **Phase A** (current): Sequential baseline — all three models as inference stages.  Used for ablation: quantify how bad BEV is without geometric distillation.
+- **Phase B** (next): MVSplat decoder retraining — add occupancy/semantic/confidence heads, freeze encoder, train with VGGT geometric supervision.
+- **Phase C**: Differentiable BEV marginalization + ray-based free-space carving — replace numpy projection with torch operations.
+- **Phase D**: End-to-end training with planning loss — backpropagate from costmap quality metrics to Gaussian parameters.
 
 ---
 

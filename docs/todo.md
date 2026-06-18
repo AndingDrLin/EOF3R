@@ -78,53 +78,44 @@
 
 ---
 
-## Stage 3：前景 Object-level 3DGS 重建
+## Stage 3-5：跨模型几何蒸馏 — MVSplat Decoder 改造（核心创新）
 
-> 状态：MVSplat real 推理已验证 ✅。坐标系统校准是当前核心 blocker（BEV coverage 0.45%）
+> 定位转变：不再串行拼接 VGGT+MVSplat 做推理。
+> VGGT = 训练时的几何 teacher，MVSplat = 推理时的唯一模型（单模型前馈）。
 
-- [x] 搭建 MVSplat 推理环境（baselines/mvsplat/ 已 clone + re10k.ckpt）
-- [x] 写 MVSplat wrapper（`src/foreground/mvsplat_wrapper.py`）— build/infer/extract_occupancy
-- [x] E2E 测试通过（scripts/eval/test_e2e_pipeline.py — 5 阶段定量指标，自动检测真/stub）
-- [x] SAM2 clone + SAM2Wrapper（`src/segmentation/sam2_wrapper.py`）— HuggingFace 自动下载
-- [x] SAM2 安装依赖（pip install git+https://github.com/facebookresearch/sam2.git → eof3r env）
-- [x] SAM2 real 验证：Re10k 图像 65 objects（过分割，需 YOLO 预处理）
-- [x] MVSplat real 推理在 eof3r env 中运行（path isolation 已解决，坐标尺度待校准）
-- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（坐标校准后）
-- [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）— 坐标校准后进行
-- [x] 物体参数提取：MVSplatWrapper.extract_occupancy() 返回 3D center, size, BEV footprint（需校准坐标）
-- [ ] Fallback: per-object 3DGS 优化 wrapper
-- [ ] 对比：feedforward vs optimization 的精度/速度
+### Phase A：Sequential Baseline ✅ 已完成
+- [x] MVSplat wrapper（build/infer/extract_occupancy）
+- [x] VGGT wrapper（from_pretrained + 6D 位姿解码 + 地面估计）
+- [x] 坐标对齐（OpenCV→Y-up）+ scale recovery
+- [x] YOLO+SAM2 → 真实语义标签
+- [x] 动态 BEV grid + Nav2 costmap
+- [x] 消融实验（4 变体 × 3 帧配对）
+- [x] 三方向文献调研完成
 
----
+**Baseline 结论**：FG/BG IoU=0.05, BEV coverage 1.88%（动态 grid 下 85% 是假象），costmap 55% lethal。三个机制性失败阻止 BEV 可用——见 `docs/current_issues.md`。
 
-## Stage 4：背景 3R 粗重建
+### Phase B：MVSplat Decoder Head Retraining（当前）
+- [ ] 添加 occupancy head（sigmoid, 输出 0=free/1=occupied）
+- [ ] 添加 semantic head（per-Gaussian class logits）
+- [ ] 添加 confidence head（epistemic uncertainty）
+- [ ] 训练损失：L_depth(VGGT) + L_occ + L_semantic(SAM2) + λ·L_color
+- [ ] Freeze MVSplat encoder（cost volume），只训练 decoder head
+- [ ] 训练数据：Re10k 场景 → (图像, VGGT 几何监督) 对
+- [ ] 验证：对比 baseline opacity vs retrained occupancy 的 BEV 质量
 
-> 状态：VGGT-1B 真模型已验证通过 ✅。坐标系统验证是当前核心 blocker
+### Phase C：可微 BEV + Free-Space Carving
+- [ ] 将 numpy BEV 投影替换为 torch 可微操作
+- [ ] 解析 Σ→XZ 投影（保留协方差结构，消除各向同性过膨胀）
+- [ ] VGGT 光线 free-space carving（FREE/OCCUPIED/UNKNOWN 三值）
+- [ ] 验证：对比 baseline scatter+smooth vs 可微 marginalization
 
-- [x] VGGT clone + 搭建环境（baselines/vggt/ 已 clone）
-- [x] 写 VGGT stub（`src/background/vggt_stub.py`）— 合成点云/位势/地面/可通行
-- [x] 写 VGGTWrapper（`src/background/vggt_wrapper.py`）— from_pretrained + 6D 位姿解码 + 地面平面估计
-- [x] VGGT 安装依赖（pip install -e baselines/vggt/ → mvsplat env 和 eof3r env 均已装）
-- [x] VGGT real 验证：输出 (2, 378, 504, 3) pointmap + 2 帧相机位姿，14.4s ✅
-- [ ] 搭建 MASt3R/DUSt3R fallback 环境
+### Phase D：端到端 Planning Loss
+- [ ] costmap 质量指标作为可微损失
+- [ ] Backprop 到 Gaussian 参数
+- [ ] 三消融实验完整报告（论文核心结果）
 - [ ] 坐标系统验证（VGGT 输出帧 → Y-up → Z-up 转换确认）
 
 ---
-
-## Stage 5：融合与 BEV 代价地图生成
-
-> 状态：所有模块就绪，真模型 E2E 跑通。当前瓶颈：坐标系校准（BEV coverage 0.45% → 目标 >30%）
-
-- [x] 前景-背景坐标对齐验证（Y-up → Z-up 转换 + coord_utils.py）
-- [x] Object Gaussian → BEV 占据网格投影实现（src/fusion/bev_projector.py — max/sum/threshold）
-- [x] 语义/风险层级生成（src/costmap/costmap_generator.py — semantic_weights dict）
-- [x] Costmap inflation 参数调优（Nav2 风格的 maximum_filter inflation）
-- [x] Nav2 costmap layer plugin 骨架（src/costmap/ — 输出 uint8 0-254 格式）
-- [x] E2E 真模型验证：SAM2 + VGGT-1B → fusion → costmap，pipeline 全链路跑通（但存在坐标质量问题：BEV coverage 0.45%, drivable conflict 100% — 见 docs/current_issues.md）
-- [x] **矢量化 fusion BEV 投影** — np.bincount scatter + gaussian_filter，130s → 0.2s（650x）
-- [ ] **MVSplat real 推理接入 + 坐标系校准** — 当前 MVSplat 输出坐标尺度与 VGGT 不匹配，需注入 scale/translation 校准
-- [ ] 真数据验证（替换合成 FG 为真实 MVSplat 输出 + 坐标系校准后）
-- [ ] ROS2 Nav2 节点适配（当前仅生成 numpy costmap，未 publish to ROS topic）
 
 ---
 

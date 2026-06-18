@@ -11,15 +11,24 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 
 ## 核心思路
 
-相机输入 → SAM2 前景分割 → **前景物体** G2O-inspired feedforward Gaussian occupancy 预测（object state, 3D bbox, occupancy_alpha, BEV footprint, semantic class, risk score, confidence）
-　＋ **背景** 3R 模型粗几何估计（pointmap、相机位姿、地面结构、可通行区域）
-→ 融合 → **BEV semantic costmap** → ROS2 Nav2 局部路径规划增强
+**跨模型几何蒸馏（Cross-Model Geometric Distillation）**：
 
-**训练目标**：L_occupancy + L_mask + L_depth + L_silhouette + L_footprint + L_semantic + L_confidence（主），L_rgb（辅助）
-**RGB/photometric 是辅助监督，不是核心目标。SH/color/view-dependent effects 不是核心输出。**
+```
+训练时：  图像 → VGGT (teacher) → depth/pointmap/rays → 几何监督 ─┐
+         图像 → SAM2/YOLO → 2D masks → 语义监督 ────────────────┤
+                                                                  ▼
+         图像 → MVSplat (student) → 学习预测 occupancy + semantic + confidence
+
+推理时：  图像 → MVSplat → BEV occupancy + semantic costmap（单模型前馈）
+```
+
+**不是"拼接预训练模型"做串行推理，而是用几何模型（VGGT）教渲染模型（MVSplat）学会预测规划导向的占据表示。**
+
+**训练目标**：L_depth + L_occ + L_free + L_semantic（主），L_color（辅助, λ=0.1）
+**RGB/photometric 是辅助监督，不是核心目标。**
 
 **车端**：始终独立运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel）
-**云端**：异步高算力推理（SAM2 mask 细化 / 3R 背景几何估计 / G2O-inspired feedforward Gaussian occupancy / 语义 costmap 生成）。云端返回 lightweight planning-oriented representation，不返回完整 Gaussian 渲染模型。
+**云端**：运行改造后的 MVSplat（单模型前馈推理），输出 BEV occupancy + semantic costmap
 
 ---
 
@@ -27,10 +36,10 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 
 **不是"能避障"**。本地避障（LiDAR + Nav2 obstacle layer）已经可以安全停车和基本绕行。
 
-本项目要解决的问题是：
-- **更准确的物体占据形状** → 减少过度保守的绕行和停车
-- **更丰富的语义风险信息** → 区分"可以靠近的路锥"和"必须远离的行人"
-- **更平滑的局部路径** → 减少路径抖动和无效停顿
+**技术创新**：
+- **跨模型几何蒸馏**：发现 photorealistic Gaussian primitives 的 opacity 与颜色纠缠→BEV 投影不可用；提出用 VGGT 的几何信号重新训练 MVSplat decoder，解耦占据与外观
+- **Planning-Oriented Gaussian 表征**：occupancy head 替代 opacity、可微 BEV 边缘化保留协方差、free-space carving 引入三值空间分类
+- **训练/推理不对称架构**：VGGT 只在训练时作为几何 teacher，推理时只跑 MVSplat（单模型）
 
 ---
 
@@ -40,14 +49,13 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 ┌──────────────────────────────┐       ┌──────────────────────────┐
 │        Husky 车端             │       │      云端 GPU 服务器       │
 │                              │       │                          │
-│  相机 ─→ 关键帧选择 ─────────|─ HTTP/gRPC ─→│ SAM2 分割细化        │
-│                              │       │       3R 背景几何估计     │
-│  本地避障 ←── Nav2 局部规划   │       │       G2O-inspired       │
-│    ↑                         │       │       Gaussian occupancy  │
-│    │                         │       │       语义 costmap 生成   │
+│  相机 ─→ 关键帧选择 ─────────|─ HTTP/gRPC ─→│ MVSplat (改造后)    │
+│                              │       │   occupancy prediction   │
+│  本地避障 ←── Nav2 局部规划   │       │   + semantic costmap     │
+│    ↑                         │       │              │           │
 │    │                         │       │              │           │
-│  LiDAR + odom + IMU          │       │              │           │
-│    +                          │       │              ↓           │
+│  LiDAR + odom + IMU          │       │              ↓           │
+│    +                          │       │                          │
 │  云端 costmap (可选增强) ←───|────────|── costmap patch (异步)    │
 │                              │       │                          │
 │  急停 ← 安全控制器 (独立)      │       │  (结果延迟 >3s → 丢弃)    │
@@ -55,15 +63,20 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 └──────────────────────────────┘       └──────────────────────────┘
 ```
 
+**推理时只跑一个模型（MVSplat）**。VGGT 和 SAM2/YOLO 只在训练时提供几何/语义监督。
+
 ---
 
 ## 当前状态
 
 - [x] Stage 0：项目初始化（目录结构、文档骨架、配置、工具链）
 - [x] 方向调整：从纯 3D 重建扩展为机器人感知系统（2026-05）
-- [x] Stage 1：文献调研完成（12 个方向，23 篇笔记）
+- [x] Stage 1：文献调研完成（12 个方向，24 篇笔记）
 - [ ] Stage 2：数据准备（Re10k 公开数据可用，待录制 campus rosbag）
-- [x] Stage 3-5：核心 pipeline (SAM2 + VGGT + MVSplat + fusion + costmap) E2E 跑通
+- [x] **Phase A：Sequential Baseline** — SAM2+MVSplat+VGGT 串行拼接 E2E 跑通，消融实验完成
+- [ ] **Phase B：MVSplat Decoder Retraining** — 跨模型几何蒸馏，VGGT 作 teacher（当前）
+- [ ] Phase C：可微 BEV + Free-Space Carving
+- [ ] Phase D：端到端 Planning Loss
 - [x] 统一环境：`eof3r` conda env (Python 3.10, torch 2.5.1, CUDA 12.1, RTX A6000)
 - [ ] Stage 6：车-云异步架构
 - [ ] Stage 7：实验验证与消融

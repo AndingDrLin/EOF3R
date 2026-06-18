@@ -1,106 +1,100 @@
 # 当前问题与解决方案
 
-> 更新时间：2026-06-18
+> 更新时间：2026-06-19
 > 所有真模型（SAM2+VGGT+MVSplat）已在统一 eof3r env 中 E2E 验证通过。
-> **坐标系匹配已解决**（commit 36ce286+）。以下为剩余 BEV 占据质量问题。
+> **定位转变**：从"拼接预训练模型"转向"跨模型几何蒸馏"——VGGT 是训练时的 teacher，MVSplat 是推理时唯一的模型。
 
 ---
 
-## ✅ 问题 1：坐标系不匹配 — 已解决 (2026-06-18)
+## 三个机制性失败模式（根本原因，不是调参能解决的）
 
-**修复前证据**：
-- Drivable conflict rate = 100%（FG 说被占的地方，BG 全说 drivable）
-- FG/BG overlap IoU = 0.22（两模型输出在不同坐标帧）
+### 🔴 失败模式 1：Opacity ≠ Occupancy
 
-**根因**：
-1. MVSplat 用合成 pose（任意世界帧），VGGT 自估计 pose（首帧相机原点 + unit-scale 归一化）
-2. VGGT 输出在 OpenCV RDF 帧，项目使用 Y-up 帧——wrapper 未做转换
-3. VGGT `_pose_enc_to_matrices()` 错误解码 pose_enc（6D rotation → 应是 quat+FOV）
+**现象**：`opacity_mean=0.28, pass_rate(α>0.5)=2.5%`，但 BEV 中每个 α 值都没有物理含义。
 
-**修复内容**（`eof3r/src/background/vggt_wrapper.py` + `eof3r/scripts/eval/test_e2e_pipeline.py`）：
-1. 修正 `_pose_enc_to_matrices()`：正确解码 VGGT 的 9D pose_enc（T(3)+quat(4)+FOV(2)）
-2. 添加 `_opencv_rdf_to_yup_points/poses()`：OpenCV RDF → Y-up (R=diag(1,-1,-1))
-3. E2E 测试用 VGGT 的 OpenCV 位姿作为 MVSplat C2W extrinsics → 两模型同帧
-4. MVSplat 高斯球 + VGGT pointmap 统一转换到 Y-up 后再融合
+**机制**：MVSplat 用 3DGS 的 alpha-blending 渲染方程优化 opacity：
+```
+C_pixel = Σ α_i · c_i · Π(1-α_j)
+```
+α 和 SH 颜色 c 是**联合优化**的——低 α + 高 c 与 高 α + 低 c 可以产生相同像素。优化器只关心渲染颜色，不关心 α 是否有物理意义。一个 α=0.28 的高斯球可以是场景表面的主要贡献者（因为它是光线首先遇到的那个），但在 BEV 中我们把它当成"28% 占据"——这是类别错误（category error）。
 
-**修复后结果**：
-- Drivable conflict rate: 100% → **0.00%** ✅
-- FG/BG overlap IoU: 0.22 → 0.21（持平——重叠差来自 scale 问题，非坐标系统）
-- 两者确实在同一坐标帧中（冲突率归零证实）
+**根因**：MVSplat 的 opacity 是"对渲染颜色的**相对贡献权重**"，不是"该空间位置被物体占据的**概率**"。
 
-**遗留**：VGGT 的 unit-scale 归一化导致场景被压缩（见问题 2）。
+**干预**：用 VGGT depth 做 binary silhouette 监督——该像素有深度值 → 对应光线上的高斯球应该输出 occupation=1（被占据），没有深度 → occupation=0（自由空间）。将 occupancy 从颜色渲染中解耦。
 
 ---
 
-## 🔴 问题 2：VGGT Unit-Scale 归一化导致 BEV 覆盖不足
+### 🔴 失败模式 2：协方差结构在 BEV 投影中丢失
 
-**证据**（2026-06-18 E2E 运行）：
-- `bev_occupancy_coverage_t0.3 = 0.0009`（0.09%，比修复前的 0.45% 更差——因为坐标对齐后高度滤波生效）
-- `bev_spatial_extent_m2 = 6.42`（占 BEV grid 1600m² 的 0.4%）
-- MVSplat 高斯球 Mean Y=4.47m（高于相机），高度滤波 (-0.5, 2.0) 过滤大部分
-- VGGT 训练时对 pointmap 做了 unit average distance 归一化（`vggt/training/train_utils/normalization.py:100-103`）
+**现象**：BEV 投影时用各向同性 `scatter + gaussian_smooth(σ=avg_scale×3)`，完全丢失 3D 协方差。
 
-**根因**：VGGT 输出的世界坐标被归一化到平均距离≈1，而 BEV grid 配置为 40×40m 真实尺度。整个场景被压缩在几米范围内，cell 密度极低。
+**机制**：3DGS 每个高斯球有完整 3×3 协方差 Σ（编码形状、大小、朝向）。投影到 BEV（XY 平面）时应做高度维度的**边缘化**（marginalization）：从 Σ 提取 XZ 子矩阵得到 2D 协方差，保持各向异性和朝向信息。当前 scatter+smooth：
+1. 取中心 (x,z) → **丢弃 Σ**
+2. 用 `avg(scale_x, scale_z)` 作为固定 σ → **忽略各向异性**
+3. 各向同性 Gaussian smooth → **忽略 XZ 相关性**
 
-**修复方向**：
-1. ~~增大 BEV range~~（已从 20m→40m，不解决根本问题）
-2. 根据 VGGT 输出的实际 spatial range 动态设置 BEV grid 范围+分辨率
-3. 尝试从 VGGT pointmap 恢复真实尺度（需要已知某一维度的真实长度）
-4. 对于纯融合验证，使用 VGGT stub（合成数据在真实米尺度）跳过 unit-scale 问题
-5. 长期：在 pipeline 中加入 scale calibration 模块（利用 LiDAR/depth 测量作为 scale anchor）
+**结果**：10cm 宽、1m 高的椅腿高斯球被放大为 `3×max(scale)` 的圆形——严重过度膨胀。
+
+**干预**：可微 BEV 边缘化——对每个高斯球的 Σ 在高度维度做解析投影，保留完整 2D 协方差。等价于光线从上方穿过高斯球累积 opacity。
 
 ---
 
-## ✅ 问题 3：SAM2 过分割 — 已解决 (2026-06-18)
+### 🔴 失败模式 3：无自由空间建模
 
-**修复前**：单张 720×1280 图像 → 65 个碎片，标签占位符轮询。
+**现象**：Costmap 中 lethal=55%, free=42%，无法区分"被占据"和"未观察到"。
 
-**修复方案**：YOLOv8-nano (6MB) 做检测 + SAM2 box-prompt 精细分割。
-- YOLO 用 3 个 bbox prompt 代替 SAM2 automatic 的 32×32=1024 个网格点
-- 检测数: 65 → 3（`['couch', 'chair', 'chair']`）
-- 分割时间: 6-7s → 4.3s
-- 修复代码：`sam2_wrapper.py` `detect_and_segment()` 方法
-- 向后兼容：`segment()` 保留 automatic 模式
+**机制**：VGGT pointmap 给了表面点→我们全部当作"占据"→投影到 BEV。但每个 VGGT 像素对应一条从相机到表面的**光线**：
+```
+相机 ─FREE→ [沙发表面] ─UNKNOWN→ [墙（被遮挡）]
+```
+正确的占据模型应对每条 VGGT 光线做 free-space carving：
+- 相机到表面：**FREE**
+- 表面附近（±σ）：**OCCUPIED**
+- 表面后方：**UNKNOWN**（被遮挡，无法确定）
 
----
-
-## 🟡 问题 4：矢量化融合导致峰值稀释
-
-**证据**：BEV coverage 从老算法的 67%（合成数据）降到 0.45%（真数据）。部分原因是问题 1+2（grid 太小），但也因为 scatter+gaussian_smooth 的归一化策略不对。
-
-**根因**：`_gaussian_smooth` 后除以 `bev_max` 做 re-normalization，但 grid 内只有少数点，绝大多数 cell 的 occupancy 被稀释到 0.3 以下。
-
-**当前状态**：问题 1+2 已解决（坐标对齐 + scale recovery + 动态 BEV），coverage 提升至 1.88%。待实机数据验证后重新评估是否需要 max-mode scatter。
+**干预**：Ray-based free-space carving——用 VGGT depth 对每条光线标记三区域。这些标记作为训练监督：MVSplat 的高斯球在 free 区域应输出 occupancy=0，在 occupied 区域应输出 occupancy=1。
 
 ---
 
-## ✅ 问题 5：无语义分类器 — 已解决 (2026-06-18)
+## 跨模型几何蒸馏：三个干预的统一框架
 
-**修复前**：labels 全是 `["unknown", "person", "bicycle", ...]` 轮询占位符。
+**核心创新**：VGGT 从"pipeline 的一个阶段"重新定位为"MVSplat 的几何老师"。
 
-**修复方案**：YOLOv8-nano 自带 COCO 80 类语义标签 + 风险等级映射。
-- 语义 BEV 已生成（2 类成功投影）
-- 风险等级映射：person=3, bicycle=2, chair=0, …
-- Costmap generator 的 `semantic_weights` 已在消费真实标签
-- 修复代码：`sam2_wrapper.py` `_COCO_CLASSES` + `_CLASS_RISK` 字典
+```
+训练时：
+  VGGT → depth + pointmap + free-space rays → 几何监督
+  SAM2/YOLO → 2D masks → 语义监督
+  MVSplat → 学习预测 occupancy + semantic + confidence（非 opacity + SH + color）
+
+推理时：
+  图像 → MVSplat → BEV occupancy + semantic costmap（单模型，前馈）
+```
+
+**三个消融实验**（论文核心）：
+
+| 消融 | 干预 | 验证指标 |
+|------|------|---------|
+| A vs Baseline | 用 VGGT depth 监督 occupancy head 替代 opacity | BEV coverage、occupancy accuracy |
+| B vs A | 加入可微 BEV 边缘化（保留 Σ） | Footprint IoU、boundary precision |
+| C vs B | 加入 free-space carving | Costmap free/occupied/unknown 分布 |
 
 ---
 
-## 已解决的问题（存档）
+## 已解决的工程问题（存档）
 
-- ✅ SAM2 过分割（问题 3）+ 无语义分类器（问题 5）：YOLOv8-nano (6MB) → SAM2 box-prompt，65→3 objects，真实 COCO 标签 + 风险等级
-- ✅ 坐标系不匹配（问题 1）：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 100%→0%
+- ✅ SAM2 过分割 + 无语义：YOLOv8-nano (6MB) → SAM2 box-prompt，65→3 objects，真实 COCO 标签
+- ✅ 坐标系不匹配：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 100%→0%
+- ✅ VGGT scale 归一化：地面平面恢复 ×7.834 尺度因子 + 动态 BEV grid
 - ✅ Fusion 速度：130s → 0.05s（矢量化 bincount + gaussian_filter）
 - ✅ eof3r 统一环境：SAM2 + VGGT + MVSplat 三个真模型均在同一 env 验证通过
-- ✅ MVSplat torch 兼容：通过 sys.path + sys.modules 隔离解决 src/ 命名冲突
-- ✅ 公开数据集：Re10k 4 帧 720p 图像已保存到 `data/public/re10k_samples/`
-- ✅ SAM2/VGGT clone（GitHub TLS）：通过代理 192.168.213.103:53941 解决
-- ✅ 项目重构：代码集中于 `eof3r/`，文档集中于 `docs/`
 - ✅ 项目解耦：wrappers 优先使用 pip 安装的包，baselines/ 仅作开发 fallback
+- ✅ 项目重构：代码集中于 `eof3r/`，文档集中于 `docs/`
+- ✅ SAM2/VGGT clone（GitHub TLS）：通过代理解决
 
 ---
 
-## 环境信息（更新于 2026-06-18）
+## 环境信息（更新于 2026-06-19）
 
 **唯一环境**：`eof3r` — Python 3.10, torch 2.5.1+cu121, GPU NVIDIA RTX A6000 (48GB)
-**峰值显存**（三模型全部加载）: ~6.3 GB
+**峰值显存**（三模型全部加载）: ~6.4 GB
+**新增依赖**：ultralytics (YOLOv8)

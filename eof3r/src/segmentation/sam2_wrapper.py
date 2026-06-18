@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -27,8 +26,8 @@ _SAM2_AVAILABLE = False
 if str(_SAM2_ROOT) not in sys.path:
     sys.path.insert(0, str(_SAM2_ROOT))
 try:
-    from sam2.build_sam import build_sam2_hf
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+    from sam2.build_sam import build_sam2_hf
 
     _SAM2_AVAILABLE = True
 except ImportError:
@@ -76,13 +75,12 @@ class SAM2Wrapper:
         self._model_size = model_size
         self._checkpoint = _HF_CHECKPOINTS[model_size]
         self._min_mask_area = min_mask_area
-        self._predictor: object | None = None
         self._mask_generator: SAM2AutomaticMaskGenerator | None = None
 
     # ------------------------------------------------------------------
     # build
     # ------------------------------------------------------------------
-    def build(self, model_size: Optional[str] = None) -> None:
+    def build(self, model_size: str | None = None) -> None:
         """Load SAM2 model and instantiate mask generator.
 
         Args:

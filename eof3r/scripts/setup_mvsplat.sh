@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Script is at eof3r/scripts/setup_mvsplat.sh — go up 2 levels to reach repo root.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MVSPLAT_DIR="${MVSPLAT_DIR:-${REPO_ROOT}/baselines/mvsplat}"
 ENV_PREFIX="${MVSPLAT_ENV_PREFIX:-${HOME}/lyj/anaconda3/envs/mvsplat}"
 PYTHON_BIN="${PYTHON_BIN:-${ENV_PREFIX}/bin/python}"

@@ -78,13 +78,13 @@ pip install -e baselines/mvsplat/  # not a pip pkg — install deps manually
 
 ### Config-driven Experiments
 
-All experiments are driven by YAML configs inheriting from `configs/default.yaml`. Override fields via CLI or experiment-specific YAML. Never hardcode hyperparameters in code.
+All experiments are driven by YAML configs inheriting from `eof3r/configs/default.yaml`. Override fields via CLI or experiment-specific YAML. Never hardcode hyperparameters in code.
 
 ---
 
 ## §1c Pipeline Architecture
 
-The system runs a **4-stage pipeline**. Each stage maps to a `src/` module:
+The system runs a **4-stage pipeline**. Each stage maps to a `eof3r/src/` module:
 
 ```
 Input: RGB images + camera intrinsics
@@ -122,8 +122,8 @@ Input: RGB images + camera intrinsics
 ```
 
 **Key interfaces between modules (actual class names):**
-- `segmentation` → `foreground`: object masks (SAM2Stub → MVSplatWrapper)
-- `segmentation` → `background`: background region mask (SAM2Stub → VGGTStub)
+- `segmentation` → `foreground`: object masks (SAM2Wrapper/SAM2Stub → MVSplatWrapper)
+- `segmentation` → `background`: background region mask (SAM2Wrapper/SAM2Stub → VGGTWrapper/VGGTStub)
 - `foreground` / `background` → `fusion`: aligned 3D Gaussians (numpy) / pointmaps in shared Y-up coords
 - `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame (BEVProjector → CostmapGenerator)
 - `costmap` → ROS2: uint8 costmap array (0=free, 254=lethal), not yet published to ROS topic
@@ -131,9 +131,9 @@ Input: RGB images + camera intrinsics
 **Stub vs Real Status (as of 2025-06-18):**
 | Module | File | Status |
 |--------|------|--------|
-| segmentation | `sam2_stub.py` | 🟡 Stub (SAM2 blocked by GitHub TLS) |
+| segmentation | `sam2_wrapper.py` | 🟢 Real SAM2 via HuggingFace (auto-download), fallback to `sam2_stub.py` |
 | foreground | `mvsplat_wrapper.py` | 🟢 Real MVSplat wrapper (build/infer/extract_occupancy) |
-| background | `vggt_stub.py` | 🟡 Stub (VGGT blocked by GitHub TLS) |
+| background | `vggt_wrapper.py` | 🟢 Real VGGT via HuggingFace (auto-download), fallback to `vggt_stub.py` |
 | fusion | `bev_projector.py`, `coord_utils.py` | 🟢 Real (Y-up→Z-up, BEV projection, FG/BG fusion) |
 | costmap | `costmap_generator.py` | 🟢 Real (Nav2 uint8 format, semantic weights, inflation) |
 | communication | `__init__.py` only | 🔴 Empty stub |
@@ -204,12 +204,12 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
    - Document in registry.yaml `patched: true`
    - Apply via `git apply` in setup scripts
 
-3. **Wrap every baseline behind a Python interface** in the corresponding `src/` module. Example:
-   - `src/foreground/gaussian_splatting_wrapper.py` wraps `baselines/gaussian-splatting/`
-   - `src/background/vggt_wrapper.py` wraps `baselines/vggt/`
+3. **Wrap every baseline behind a Python interface** in the corresponding `eof3r/src/` module. Example:
+   - `eof3r/src/foreground/mvsplat_wrapper.py` wraps `baselines/mvsplat/`
+   - `eof3r/src/background/vggt_wrapper.py` wraps `baselines/vggt/`
    - All wrappers expose a consistent API (`build()`, `train()`, `infer()`, `save()`, `load()`)
 
-4. **Isolate environments** — each baseline may have its own conda env (recorded in registry.yaml). Provide a setup script in `scripts/setup_{baseline}.sh`.
+4. **Isolate environments** — each baseline may have its own conda env (recorded in registry.yaml). Provide a setup script in `eof3r/scripts/setup_{baseline}.sh`.
 
 5. **Pre-trained weights** go to `outputs/checkpoints/{baseline_name}/`, not inside `baselines/`.
 
@@ -220,9 +220,9 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
 | Baseline | Status | Notes |
 |----------|--------|-------|
 | MVSplat | 🟢 Cloned + checkpoints | re10k.ckpt, acid.ckpt |
-| DepthSplat | 🟢 Cloned | Not yet used, not in registry.yaml |
-| SAM2 | 🔴 Blocked | GitHub TLS handshake failure — using SAM2Stub |
-| VGGT | 🔴 Blocked | GitHub TLS handshake failure — using VGGTStub |
+| DepthSplat | 🟢 Cloned | Not yet used |
+| SAM2 | 🟢 Cloned + verified | HuggingFace auto-download, 65-object over-segmentation on Re10k (needs YOLO preprocessing) |
+| VGGT | 🟢 Cloned + verified | HuggingFace auto-download, 1B model, ~14s inference |
 | DUSt3R, MASt3R | ⬜ Not started | — |
 | Nav2 | ⬜ Not started | Installed via apt on Husky only |
 
@@ -257,8 +257,8 @@ Every dataset must be registered with: name, version, source URL, download date,
 
 ### Rules
 
-- Switch datasets via `configs/default.yaml` → `data.dataset`, never hardcode dataset names in code.
-- Preprocessing scripts live in `scripts/preprocess/{dataset_name}.py`.
+- Switch datasets via `eof3r/configs/default.yaml` → `data.dataset`, never hardcode dataset names in code.
+- Preprocessing scripts live in `eof3r/scripts/preprocess/{dataset_name}.py`.
 - Small test fixtures (<1MB) may be committed to `data/test_fixtures/`.
 - Large files are never committed. Provide download URLs / scripts instead.
 
@@ -318,13 +318,13 @@ All methods in the same comparison use the same random seed and data split.
 
 ### Script vs Library
 
-- `scripts/` — standalone runnable scripts. Must have `if __name__ == "__main__":` guard.
-- `src/` — importable modules. No side effects on import.
+- `eof3r/scripts/` — standalone runnable scripts. Must have `if __name__ == "__main__":` guard.
+- `eof3r/src/` — importable modules. No side effects on import.
 
 ### Testing
 
-- Smoke tests in `tests/` — verify each module's pipeline can run end-to-end on a small fixture.
-- Naming: `tests/test_{module}.py`
+- Smoke tests in `eof3r/tests/` — verify each module's pipeline can run end-to-end on a small fixture.
+- Naming: `eof3r/tests/test_{module}.py`
 - Not aiming for 100% coverage. Aim for "every stage can be verified with one command."
 
 ### Error Handling
@@ -397,7 +397,7 @@ PSNR/SSIM/LPIPS reflect rendering quality, not planning utility. They are tracke
 
 ### Quantitative Testing Convention (mandatory)
 
-**Never rely on visual comparison of images alone.** Every test MUST output a JSON metrics file alongside any visualization. The E2E test (`scripts/eval/test_e2e_pipeline.py`) demonstrates this pattern.
+**Never rely on visual comparison of images alone.** Every test MUST output a JSON metrics file alongside any visualization. The E2E test (`eof3r/scripts/eval/test_e2e_pipeline.py`) demonstrates this pattern.
 
 Five metric categories required in every pipeline test:
 
@@ -433,7 +433,7 @@ thesis/
 - **DPI**: ≥300 for raster figures.
 - **Format**: PDF for LaTeX, PNG for quick iteration.
 - **Axes**: Clear labels, legible tick sizes.
-- **Color**: Use unified palette from `configs/plot_style.yaml` via `src/utils/plotting.py`.
+- **Color**: Use unified palette from `eof3r/configs/plot_style.yaml` via `eof3r/src/utils/plotting.py`.
 - **Legend**: Always visible, placed outside the plot area if needed.
 
 ### The key difference: `outputs/` is for everything; `thesis/` is for the best.
@@ -467,8 +467,8 @@ thesis/
 
 ### What to Commit
 
-- `src/`, `scripts/`, `configs/`, `docs/`, `lit_notes/`, `experiments/`
-- `tests/`, `.pre-commit-config.yaml`, `pyproject.toml`
+- `eof3r/src/`, `eof3r/scripts/`, `eof3r/configs/`, `docs/`, `CLAUDE.md`, `README.md`
+- `eof3r/tests/`, `eof3r/.pre-commit-config.yaml`, `eof3r/pyproject.toml`, `eof3r/requirements.txt`
 
 ### Rules
 
@@ -482,24 +482,22 @@ thesis/
 
 ### Primary Environment
 
-- **Name**: `eof3r` (not yet created — workaround: use `mvsplat` or `depthsplat` conda envs)
-- **Python**: 3.10+
-- **CUDA**: 11.8 (mvsplat env) / 12.x (target for eof3r)
+- **Name**: `eof3r`
+- **Python**: 3.10
+- **CUDA**: 12.1 (torch 2.5.1+cu121)
+- **GPU**: NVIDIA RTX A6000 (48GB), peak VRAM ~6.3GB with VGGT + MVSplat loaded
 - **Manager**: conda/mamba
 
-### Current Workaround
+### Activate
 
-Until `eof3r` env is created, use baseline conda envs:
 ```bash
-conda activate mvsplat     # torch 2.1.2+cu118 — used for all current dev
-conda activate depthsplat  # alternative
-pip install pyyaml scipy matplotlib  # add missing deps as needed
+conda activate eof3r  # Python 3.10 + torch 2.5.1 + CUDA 12.1 + SAM2 + VGGT + MVSplat
 ```
 
 ### Dependency Layering
 
-1. `requirements.txt` — minimal pip-installable dependencies (numpy, torch, open3d, etc.)
-2. `environment.yml` — complete conda environment including non-Python deps (COLMAP, CUDA toolkits)
+1. `eof3r/requirements.txt` — complete pip-installable dependencies
+2. `environment.yml` — complete conda environment including non-Python deps (COLMAP, CUDA toolkits) [not yet created]
 3. `baselines/registry.yaml` — per-baseline environments if isolation is needed
 
 ### GPU Target
@@ -513,7 +511,7 @@ pip install pyyaml scipy matplotlib  # add missing deps as needed
 - The Husky onboard computer (Jetson or x86) runs ROS2 Humble with its own environment.
 - Vehicle-side code uses `rclpy` and standard ROS2 Python packages, installed via apt.
 - The GPU training environment (`eof3r`) and vehicle environment are separate — do not mix them.
-- Vehicle-side scripts live in `scripts/robot/` and communicate with cloud via HTTP/gRPC (not ROS2 cross-network).
+- Vehicle-side scripts live in `eof3r/scripts/robot/` and communicate with cloud via HTTP/gRPC (not ROS2 cross-network).
 
 ---
 
@@ -582,5 +580,5 @@ export https_proxy=http://192.168.213.103:53941
 | `docs/standards.md` | Supplementary detail for some standards |
 | `docs/todo.md` | Task checklist, updated weekly |
 | `docs/current_issues.md` | Active issues with root causes and solutions |
-| `configs/default.yaml` | Default configuration (full pipeline + robot + cloud) |
+| `eof3r/configs/default.yaml` | Default configuration (full pipeline + robot + cloud) |
 | `baselines/registry.yaml` | External baseline manifest |

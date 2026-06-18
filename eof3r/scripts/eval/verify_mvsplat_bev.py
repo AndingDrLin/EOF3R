@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Verify that MVSplat feedforward 3DGS can output BEV-compatible Gaussians.
 
-Run from the mvsplat directory:
-  cd baselines/mvsplat && python ../../scripts/eval/verify_mvsplat_bev.py
+Run from the repo root:
+  conda activate mvsplat
+  cd baselines/mvsplat && python ../../eof3r/scripts/eval/verify_mvsplat_bev.py
 """
 
 import os
@@ -14,26 +15,26 @@ MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines
 os.chdir(MVSPLAT_ROOT)
 sys.path.insert(0, str(MVSPLAT_ROOT))
 
-import torch
-import numpy as np
 import matplotlib
+import numpy as np
+import torch
+
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import warnings
+
+import matplotlib.pyplot as plt
+
 warnings.filterwarnings("ignore")
 
-from src.model.types import Gaussians
-from src.model.encoder import get_encoder
-from src.model.decoder import get_decoder
-from src.model.model_wrapper import ModelWrapper
-from src.dataset.data_module import DataModule
+import hydra
+
 from src.config import load_typed_root_config
+from src.dataset.data_module import DataModule
 from src.global_cfg import set_cfg
 from src.misc.step_tracker import StepTracker
-from src.model.encoder.common.gaussian_adapter import GaussianAdapter
-
-import hydra
-from omegaconf import OmegaConf
+from src.model.decoder import get_decoder
+from src.model.encoder import get_encoder
+from src.model.model_wrapper import ModelWrapper
 
 
 def load_model_simple():
@@ -264,11 +265,11 @@ def main():
     print("\n" + "=" * 60)
     print("VERIFICATION SUMMARY")
     print("=" * 60)
-    print(f"✓ MVSplat loaded (re10k checkpoint)")
+    print("✓ MVSplat loaded (re10k checkpoint)")
     print(f"✓ {n} Gaussians extracted per scene")
-    print(f"✓ Parameters: means, covariances, opacities, harmonics")
+    print("✓ Parameters: means, covariances, opacities, harmonics")
     if has_scales:
-        print(f"✓ Scales available for footprint estimation")
+        print("✓ Scales available for footprint estimation")
     print(f"✓ BEV grid: {bev.shape}, {occ_count} occupied cells")
     print(f"✓ Visualization: {p}")
     print()

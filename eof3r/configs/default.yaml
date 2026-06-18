@@ -51,9 +51,15 @@ background:
 fusion:
   alignment: same_coords      # same_coords / icp / feature
   bev_resolution: 0.05        # BEV 网格分辨率 (m/cell)
-  bev_range: [-10, -10, 10, 10]  # [x_min, y_min, x_max, y_max] robot-centered
-  height_filter: [-0.5, 2.0]  # 只投影在此高度范围内的高斯球
+  # BEV range in Z-up robot frame: [x_min, y_min, x_max, y_max] in meters.
+  # NOTE: Re10k scenes span ~36m×36m; campus scenes will be smaller.
+  # When MVSplat outputs world-scale coords, use ±40 or auto-detect dynamically.
+  bev_range: [-40, -40, 40, 40]  # [x_min, y_min, x_max, y_max] robot-centered, Z-up
+  # Height filter in Z-up coords (z=up): [z_min, z_max].
+  # 1.5m is typical eye-level, 0.2m catches low obstacles.
+  height_filter: [-0.5, 2.0]  # 只投影在此高度范围内的高斯球 (Z-up)
   gaussian_to_occupancy: max  # max / sum / threshold
+  alpha_threshold: 0.3         # occupancy threshold for binary decisions
 
 # ---- 代价地图 ----
 costmap:

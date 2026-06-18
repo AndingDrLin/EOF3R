@@ -61,45 +61,59 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 
 - [x] Stage 0：项目初始化（目录结构、文档骨架、配置、工具链）
 - [x] 方向调整：从纯 3D 重建扩展为机器人感知系统（2026-05）
-- [ ] Stage 1：文献调研（12 个方向）
-- [ ] Stage 2：数据准备
-- [ ] Stage 3-8：待开始
+- [x] Stage 1：文献调研完成（12 个方向，23 篇笔记）
+- [ ] Stage 2：数据准备（Re10k 公开数据可用，待录制 campus rosbag）
+- [x] Stage 3-5：核心 pipeline (SAM2 + VGGT + MVSplat + fusion + costmap) E2E 跑通
+- [x] 统一环境：`eof3r` conda env (Python 3.10, torch 2.5.1, CUDA 12.1, RTX A6000)
+- [ ] Stage 6：车-云异步架构
+- [ ] Stage 7：实验验证与消融
+- [ ] Stage 8：论文写作与答辩
 
 ---
 
 ## 环境
 
-- Python 3.10+
-- CUDA 12.x
-- PyTorch ≥2.0
-- ROS2 Humble（车端）
-- 详见 `requirements.txt`
+- **开发环境**: `conda activate eof3r` — Python 3.10, PyTorch 2.5.1, CUDA 12.1, RTX A6000 (48GB)
+- **基线环境**: `conda activate mvsplat` — PyTorch 2.1.2, CUDA 11.8 (仅 MVSplat 独立测试)
+- **车端**: ROS2 Humble（Husky 车载计算机）
+- 详见 `eof3r/requirements.txt`
 
 ---
 
 ## 项目结构
 
 ```
-EOF3R/
-├── docs/               # 项目文档（9 个 .md）
-│   ├── project_scope.md    # 范围与目标
-│   ├── project_audit.md    # 方向诊断
-│   ├── roadmap.md          # 8 阶段技术路线
-│   ├── lit_review.md       # 12 方向文献调研
-│   ├── experiments.md      # 导航实验设计
-│   ├── engineering.md      # 三阶段工程规划
-│   ├── risks.md            # 风险评估
-│   ├── standards.md        # 补充规范
-│   └── todo.md             # 任务清单
-├── configs/            # YAML 配置
-├── src/                # 核心源码（8 个模块）
-├── scripts/            # 独立脚本
-├── baselines/          # 外部基线（gitignored）
-├── data/               # 数据集（gitignored）
-├── outputs/            # 输出（gitignored）
-├── experiments/        # 实验日志
-├── lit_notes/          # 论文笔记
-└── tests/              # 冒烟测试
+EOF3R/                              # 仓库根目录
+├── README.md
+├── CLAUDE.md                       # 项目宪法与开发指引
+├── .gitignore
+│
+├── eof3r/                          # 所有可运行代码
+│   ├── src/                        # 核心源码（8 个模块）
+│   │   ├── segmentation/           # SAM2 分割
+│   │   ├── foreground/             # MVSplat 前馈高斯占据
+│   │   ├── background/             # VGGT 背景几何估计
+│   │   ├── fusion/                 # BEV 投影与融合
+│   │   ├── costmap/                # Nav2 代价地图生成
+│   │   └── communication/          # 车-云通信（预留）
+│   ├── scripts/                    # 独立脚本（eval/, setup/, robot/）
+│   ├── configs/                    # YAML 配置
+│   ├── tests/                      # 冒烟测试
+│   ├── requirements.txt
+│   ├── pyproject.toml
+│   └── .pre-commit-config.yaml
+│
+├── docs/                           # 项目文档（9+ .md + 23 篇论文笔记）
+│   ├── project_scope.md
+│   ├── roadmap.md
+│   ├── lit_review.md
+│   ├── todo.md
+│   ├── current_issues.md
+│   └── lit_notes/
+│
+├── baselines/                      # 外部基线代码（gitignored）
+├── data/                           # 数据集（gitignored）
+└── outputs/                        # 实验输出（gitignored）
 ```
 
 ---
@@ -117,3 +131,4 @@ EOF3R/
 | [risks.md](docs/risks.md) | 9 类风险与降级方案 |
 | [standards.md](docs/standards.md) | 命名与工程规范补充 |
 | [todo.md](docs/todo.md) | 按阶段的任务清单 |
+| [current_issues.md](docs/current_issues.md) | 当前问题与根因分析 |

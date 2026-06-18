@@ -35,7 +35,7 @@ class VGGTStub:
         max_resolution: int = 512,
         estimate_ground: bool = True,
         estimate_drivable: bool = True,
-    ):
+    ) -> None:
         """Initialize stub.
 
         Args:

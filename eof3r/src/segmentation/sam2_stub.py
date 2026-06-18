@@ -25,7 +25,7 @@ class SAM2Stub:
       - Returns masks, boxes, labels, scores
     """
 
-    def __init__(self, model_size: str = "base", min_mask_area: int = 500):
+    def __init__(self, model_size: str = "base", min_mask_area: int = 500) -> None:
         """Initialize stub.
 
         Args:

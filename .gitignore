@@ -27,6 +27,7 @@ env/
 
 # Data & outputs (large files, not version controlled)
 data/
+!data/test_fixtures/          # small test fixtures (<1MB) are committable
 outputs/
 
 # Baselines — ignore all external code, track only manifest and patches

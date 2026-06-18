@@ -126,11 +126,16 @@ class BEVProjector:
         bev = _gaussian_smooth(bev_raw, sigma_cells, truncate)
 
         # Re-normalize: preserve peak occupancy so smoothing doesn't dilute.
-        # After scatter, each occupied cell had its own opacity.  After smooth,
-        # the peak should still be close to 1.0 for a dense cluster.
+        # Only re-scale when the peak dropped significantly (≥30% reduction),
+        # which indicates dilution from the Gaussian blur.  When the peak is
+        # already stable, skip normalization to avoid amplifying faint single
+        # Gaussians to full occupancy.
         bev_max = bev.max()
-        if bev_max > 0:
-            bev = np.clip(bev / min(bev_max, 1.0), 0.0, 1.0)
+        bev_raw_max = float(bev_raw.max())
+        if bev_raw_max > 0 and bev_max < bev_raw_max * 0.7:
+            scale = bev_raw_max / max(bev_max, 1e-6)
+            bev = bev * scale
+        bev = np.clip(bev, 0.0, 1.0)
 
         # Post-processing: apply aggregation mode.
         if self._agg_mode == "max":

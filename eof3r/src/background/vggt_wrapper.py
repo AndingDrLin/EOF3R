@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -74,7 +73,7 @@ class VGGTWrapper:
     # ------------------------------------------------------------------
     def build(
         self,
-        checkpoint_path: Optional[str] = None,
+        checkpoint_path: str | None = None,
         model_variant: str = "1b",
     ) -> None:
         """Load VGGT model from HuggingFace Hub.
@@ -124,6 +123,25 @@ class VGGTWrapper:
 
         # Resize and normalize images.
         processed = [_resize_image(im, self._max_resolution) for im in images]
+        # All processed images must have the same spatial size for stacking.
+        # _resize_image ensures uniform size via the max_resolution constraint,
+        # but if input images differ in aspect ratio, force to the smallest
+        # common dimensions.
+        shapes = {(p.shape[1], p.shape[2]) for p in processed}  # (H, W) per image
+        if len(shapes) > 1:
+            h_min = min(s[0] for s in shapes)
+            w_min = min(s[1] for s in shapes)
+            for i in range(len(processed)):
+                if processed[i].shape[1] != h_min or processed[i].shape[2] != w_min:
+                    import cv2
+
+                    processed[i] = cv2.resize(
+                        processed[i].transpose(1, 2, 0), (w_min, h_min),
+                        interpolation=cv2.INTER_AREA,
+                    ).transpose(2, 0, 1)
+            logger.warning(
+                "VGGT input images had mismatched sizes; resized to (%d, %d).", h_min, w_min
+            )
         # Stack: (N, 3, H, W) float32 in [0, 1].
         tensor = torch.from_numpy(np.stack(processed, axis=0)).float()
         if tensor.max() > 1.5:
@@ -178,21 +196,36 @@ def _resize_image(image: np.ndarray, max_res: int, patch_size: int = 14) -> np.n
 
     VGGT uses a ViT backbone with patch_size=14.  Input dimensions must be
     divisible by 14 or the patch embedder asserts.
+
+    Raises:
+        ImportError: If cv2 (opencv-python) is not installed and resizing is needed.
     """
     h, w = image.shape[:2]
     scale = min(max_res / max(h, w), 1.0)
     if scale < 1.0:
         new_h, new_w = int(h * scale), int(w * scale)
-        import cv2
-
+        try:
+            import cv2
+        except ImportError:
+            raise ImportError(
+                "opencv-python (cv2) is required for VGGT image preprocessing. "
+                "Install with: pip install opencv-python"
+            )
         image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
         h, w = new_h, new_w
     # Round down to nearest patch_size multiple.
     h = (h // patch_size) * patch_size
     w = (w // patch_size) * patch_size
     if h != image.shape[0] or w != image.shape[1]:
-        import cv2
-
+        # cv2 already imported above if scale < 1.0; import here for the
+        # case where only patch-alignment resize is needed.
+        try:
+            import cv2
+        except ImportError:
+            raise ImportError(
+                "opencv-python (cv2) is required for VGGT image preprocessing. "
+                "Install with: pip install opencv-python"
+            )
         image = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
     return image.transpose(2, 0, 1)  # HWC → CHW
 
@@ -224,8 +257,14 @@ def _pose_enc_to_matrices(pose_enc: np.ndarray) -> np.ndarray:
 def _estimate_ground_plane(world_points: np.ndarray) -> np.ndarray:
     """Fit ground plane (a,b,c,d) to central-bottom region of the pointmap.
 
-    Uses the first frame's pointmap, samples central-bottom region,
+    Uses the first frame's pointmap, samples the central-bottom region,
     and fits a plane via SVD.
+
+    NOTE: Operates in VGGT's native world frame (NOT the project Y-up frame).
+    The caller (VGGTWrapper.infer) documents this frame; conversion to the
+    project's Y-up convention happens at the fusion stage (coord_utils.py).
+    The heuristic below assumes the "ground" axis in VGGT's frame is axis-1
+    (typical for models that set the first camera at origin looking +Z).
     """
     pm = world_points[0]  # (H, W, 3) — first frame
     h, w = pm.shape[:2]
@@ -233,10 +272,11 @@ def _estimate_ground_plane(world_points: np.ndarray) -> np.ndarray:
     cx_start, cx_end = int(w * 0.2), int(w * 0.8)
     cy_start, cy_end = int(h * 0.6), h
     region = pm[cy_start:cy_end, cx_start:cx_end].reshape(-1, 3)
-    # Remove extreme outliers (Y-up: Y is height).
-    y_vals = region[:, 1]
-    q05, q95 = np.percentile(y_vals, [5, 95])
-    inliers = region[(y_vals >= q05) & (y_vals <= q95)]
+    # Remove extreme outliers along the presumed height axis.
+    # VGGT's native frame: axis-1 is the vertical axis (model-specific).
+    height_vals = region[:, 1]
+    q05, q95 = np.percentile(height_vals, [5, 95])
+    inliers = region[(height_vals >= q05) & (height_vals <= q95)]
     if len(inliers) < 10:
         return np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
     # SVD fit: centroid + normal.
@@ -244,7 +284,7 @@ def _estimate_ground_plane(world_points: np.ndarray) -> np.ndarray:
     _, _, vh = np.linalg.svd(inliers - centroid, full_matrices=False)
     normal = vh[2]  # smallest singular vector
     normal = normal / (np.linalg.norm(normal) + 1e-8)
-    # Ensure normal points up (positive Y in Y-up).
+    # Ensure normal points upward along the presumed height axis (axis-1).
     if normal[1] < 0:
         normal = -normal
     d = -np.dot(normal, centroid)

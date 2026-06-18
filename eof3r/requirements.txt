@@ -1,29 +1,42 @@
-# EOF3R 最小依赖骨架
-# 具体版本号在环境验证后锁定
+# EOF3R 完整依赖清单
+# 锁定版本来自 eof3r env (Python 3.10, torch 2.5.1+cu121)
+# 安装: pip install -r requirements.txt
 
-# 深度学习
-torch>=2.0.0
-torchvision>=0.15.0
+# ---- 深度学习核心 ----
+torch>=2.5.0
+torchvision>=0.20.0
+pytorch-lightning>=2.0.0  # MVSplat / training loop
+lightning-utilities
 
-# 3D 相关
+# ---- Feedforward 3DGS 推理 ----
+hydra-core>=1.3.0           # MVSplat config (Hydra compose)
+diff_gaussian_rasterization # 3DGS rasterizer (custom build, see scripts/setup_mvsplat.sh)
+einops>=0.8.0               # tensor manipulation
+timm>=1.0.0                 # ViT backbone (VGGT)
+huggingface-hub>=0.20.0     # HF model download (SAM2, VGGT)
+omegaconf>=2.3.0
+
+# ---- 3D geometry / point cloud ----
 plyfile
-open3d
 trimesh
-numpy
-scipy
+open3d                      # point cloud I/O & visualization (install may be slow)
+numpy<2.0                   # pin <2.0 for compatibility with older MVSplat code
+scipy>=1.10.0
 
-# 图像处理
-opencv-python
-pillow
+# ---- 2D image & vision ----
+opencv-python>=4.8.0
+pillow>=10.0.0
+matplotlib>=3.7.0           # visualization in test scripts
+scikit-image>=0.21.0        # SAM2 image ops
+lpips>=0.1.4                # auxiliary perceptual metric
 
-# 配置管理
-pyyaml
-omegaconf
+# ---- configuration & CLI ----
+pyyaml>=6.0
 
-# 日志与实验追踪
-tensorboard
-wandb
+# ---- logging & experiment tracking ----
+wandb>=0.15.0               # experiment tracking (primary)
 
-# 工具
-tqdm
-rich
+# ---- utilities ----
+tqdm>=4.65.0
+rich>=13.0.0
+python-dotenv               # .env loading

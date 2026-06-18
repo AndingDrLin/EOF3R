@@ -110,10 +110,7 @@ def compute_bev_metrics(bev: np.ndarray, name: str = "bev") -> dict:
 
     # Density: average occupancy over occupied cells.
     occupied_mask = bev > 0.01
-    if occupied_mask.sum() > 0:
-        density = float(bev[occupied_mask].mean())
-    else:
-        density = 0.0
+    density = float(bev[occupied_mask].mean()) if occupied_mask.sum() > 0 else 0.0
     metrics[f"{name}_occupancy_density"] = round(density, 6)
 
     # Spatial extent (approximate area in m²).
@@ -512,10 +509,6 @@ def main() -> None:
             fg_result = fg.infer(images, poses, K)
             g_data = fg_result["gaussians"]
             fg_metadata = fg_result["metadata"]
-
-        # Extract occupancy.
-
-        alpha_threshold = config.get("occupancy", {}).get("alpha_threshold", 0.5)
 
     stage_times["foreground"] = round(time.perf_counter() - t0, 4)
 

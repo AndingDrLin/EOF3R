@@ -10,4 +10,6 @@ from .vggt_stub import VGGTStub
 # Prefer real wrapper, fall back to stub.
 VGGT = VGGTWrapper if VGGTWrapper is not None else VGGTStub
 
-__all__ = ["VGGT", "VGGTStub", "VGGTWrapper"]
+__all__ = ["VGGT", "VGGTStub"]
+if VGGTWrapper is not None:
+    __all__.append("VGGTWrapper")

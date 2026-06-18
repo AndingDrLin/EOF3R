@@ -11,6 +11,7 @@ Provides:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 from dataclasses import dataclass
@@ -29,7 +30,11 @@ def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:
     MVSplat's src/ package conflicts with our project's src/.
     We save the current sys.path + sys.modules state, strip everything
     except system paths, prepend MVSplat paths, and chdir to the MVSplat root.
-    Caller MUST restore via _restore_from_mvsplat().
+
+    Returns:
+        (previous_cwd, saved_path, saved_modules) — caller MUST restore these
+        after the MVSplat operations complete.  See build() for the restore
+        pattern.
     """
     import importlib
 
@@ -115,10 +120,8 @@ class MVSplatWrapper:
         from hydra.core.global_hydra import GlobalHydra
 
         # Clear Hydra singleton if already initialized (VGGT or others may have used it).
-        try:
+        with contextlib.suppress(Exception):
             GlobalHydra.instance().clear()
-        except Exception:
-            pass
 
         from src.config import load_typed_root_config
         from src.global_cfg import set_cfg
@@ -128,7 +131,6 @@ class MVSplatWrapper:
         from src.model.model_wrapper import ModelWrapper
 
         # Build config via hydra compose.
-        overrides = config_overrides or {}
         hydra_overrides = [
             "+experiment=re10k",
             f"checkpointing.load={checkpoint_path}",
@@ -140,6 +142,10 @@ class MVSplatWrapper:
             "test.save_image=false",
             "test.save_video=false",
         ]
+        # Apply caller overrides (merged after defaults so caller can override).
+        if config_overrides:
+            for key, value in config_overrides.items():
+                hydra_overrides.append(f"{key}={value}")
 
         with hydra.initialize_config_dir(
             config_dir=str(_MVSPLAT_ROOT / "config"),
@@ -194,7 +200,6 @@ class MVSplatWrapper:
         images: torch.Tensor,
         poses: torch.Tensor,
         K: torch.Tensor,
-        masks: torch.Tensor | None = None,
     ) -> dict:
         """Extract Gaussians from input views.
 
@@ -202,7 +207,6 @@ class MVSplatWrapper:
             images: (B, V, 3, H, W) float32, RGB in [0, 1].
             poses:  (B, V, 4, 4) float32, world-from-camera matrices.
             K:      (B, V, 3, 3) float32, camera intrinsics.
-            masks:  (B, V, H, W) float32, optional per-view foreground mask.
 
         Returns:
             Dict with:
@@ -264,6 +268,10 @@ class MVSplatWrapper:
 
         n = means.shape[0]
         print(f"[MVSplatWrapper] Extracted {n} Gaussians (B={b}, V={v}, H={h}, W={w}).")
+
+        # Free GPU memory used by the raw Gaussian tensors before returning.
+        del gaussians
+        torch.cuda.empty_cache()
 
         return {
             "gaussians": g_data,

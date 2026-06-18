@@ -65,11 +65,12 @@
 ## Stage 2：数据准备与场景分解
 
 - [ ] 确认 $EOF3R_DATA 环境变量和数据路径
+- [x] 公开数据可用：Re10k 4 帧 720p 样本保存到 `data/public/re10k_samples/`
 - [ ] 下载/准备 ScanNet++ 参考数据（至少 2 个场景）
 - [ ] 预约 Husky + 校园场地
 - [ ] 录制 campus rosbag（至少 3 个场景）
-- [ ] 写 rosbag 解析脚本（`scripts/preprocess/extract_frames.py`）
-- [ ] SAM2 分割在目标场景上验证
+- [ ] 写 rosbag 解析脚本（`eof3r/scripts/preprocess/extract_frames.py`）
+- [x] SAM2 分割在 Re10k 上验证（65 object 过分割，需调参或加 YOLO 预处理）
 - [ ] 前景 mask 提取 pipeline
 - [ ] 物体 crop 提取（多帧关联）
 - [ ] 背景 mask 生成
@@ -87,10 +88,10 @@
 - [x] SAM2 clone + SAM2Wrapper（`src/segmentation/sam2_wrapper.py`）— HuggingFace 自动下载
 - [x] SAM2 安装依赖（pip install -e baselines/sam2/ → eof3r env, torch 2.5.1）
 - [x] SAM2 real 验证：在合成图像上检测到 1 object，6.9s ✅
-- [ ] MVSplat real 推理在 eof3r env 中运行（当前 torch 版本不兼容，需 subprocess 调用 mvsplat env）
-- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（真模型推理）
+- [ ] MVSplat real 推理在 eof3r env 中运行（通过 path isolation workaround 可达，但坐标尺度待校准）
+- [ ] 测试：单物体 + 2-4 crops → Gaussian .ply（真模型推理 + 坐标校准后）
 - [ ] 3D 几何精度评估（Chamfer, F-Score vs GT mesh）
-- [ ] 物体参数提取：3D center, size, orientation, BEV footprint
+- [x] 物体参数提取：MVSplatWrapper.extract_occupancy() 返回 3D center, size, BEV footprint（需校准坐标）
 - [ ] Fallback: per-object 3DGS 优化 wrapper
 - [ ] 对比：feedforward vs optimization 的精度/速度
 
@@ -119,10 +120,10 @@
 - [x] 语义/风险层级生成（src/costmap/costmap_generator.py — semantic_weights dict）
 - [x] Costmap inflation 参数调优（Nav2 风格的 maximum_filter inflation）
 - [x] Nav2 costmap layer plugin 骨架（src/costmap/ — 输出 uint8 0-254 格式）
-- [x] E2E 真模型验证：SAM2 + VGGT-1B → fusion → costmap，5/5 阶段全部通过
+- [x] E2E 真模型验证：SAM2 + VGGT-1B → fusion → costmap，pipeline 全链路跑通（但存在坐标质量问题：BEV coverage 0.45%, drivable conflict 100% — 见 docs/current_issues.md）
 - [x] **矢量化 fusion BEV 投影** — np.bincount scatter + gaussian_filter，130s → 0.2s（650x）
-- [ ] **MVSplat real 推理接入** — eof3r env 不兼容 mvsplat torch 版本，需 subprocess/env 隔离
-- [ ] 真数据验证（替换合成 FG 为真实 MVSplat 输出）
+- [ ] **MVSplat real 推理接入 + 坐标系校准** — 当前 MVSplat 输出坐标尺度与 VGGT 不匹配，需注入 scale/translation 校准
+- [ ] 真数据验证（替换合成 FG 为真实 MVSplat 输出 + 坐标系校准后）
 - [ ] ROS2 Nav2 节点适配（当前仅生成 numpy costmap，未 publish to ROS topic）
 
 ---

@@ -129,7 +129,10 @@ class CostmapGenerator:
         free = int((costmap_uint8 == self._FREE).sum())
         occupied = int((costmap_uint8 > self._FREE).sum())
         total_cells = self._height * self._width
-        completeness = float((lethal + free + occupied) / max(total_cells, 1))
+        # completeness: fraction of non-unknown cells (unknown = 255, never set in
+        # the current pipeline, so this is always 1.0; kept for future use).
+        unknown = int((costmap_uint8 == self._UNKNOWN).sum())
+        completeness = float((total_cells - unknown) / max(total_cells, 1))
 
         metrics = CostmapMetrics(
             min_cost=float(costmap_uint8.min()),
@@ -182,35 +185,41 @@ class CostmapGenerator:
         Implements Nav2-style exponential cost decay:
           cost = LETHAL * exp(-1.0 * cost_scaling_factor * (dist - inscribed_radius))
 
-        Uses a simple convolution-based approximation for efficiency.
+        Uses scipy.ndimage.distance_transform_edt for exact Euclidean distance,
+        then applies the exponential decay formula.
+        Falls back to a simple max-filter dilation when scipy is unavailable.
         """
         if self._inflation_radius <= 0:
             return costmap
 
         # Binary obstacle mask.
-        obstacle = (costmap >= self._LETHAL * 0.5).astype(np.float32)
+        obstacle = (costmap >= self._LETHAL * 0.5)
 
-        # Convolution-based distance approximation.
-        kernel_size = max(3, int(self._inflation_radius / self._resolution) * 2 + 1)
-        if kernel_size % 2 == 0:
-            kernel_size += 1
+        try:
+            from scipy.ndimage import distance_transform_edt
 
-        # Build distance kernel.
-        half = kernel_size // 2
-        y, x = np.ogrid[-half : half + 1, -half : half + 1]
-        dist_kernel = np.sqrt(x**2 + y**2) * self._resolution
-        dist_kernel = dist_kernel.astype(np.float32)
+            # Euclidean distance from each cell to the nearest obstacle.
+            dist = distance_transform_edt(~obstacle) * self._resolution
 
-        # For each obstacle cell, expand cost.
-        from scipy.ndimage import maximum_filter
+            # Nav2 exponential decay:
+            #   cost = LETHAL * exp(-cost_scaling_factor * (dist - inscribed_radius))
+            # where inscribed_radius is approximated by robot_radius.
+            inscribed = self._robot_radius
+            decay = self._LETHAL * np.exp(
+                -self._cost_scaling_factor * np.maximum(dist - inscribed, 0.0)
+            )
+            # Clamp distance beyond inflation_radius.
+            decay[dist > self._inflation_radius] = 0.0
+            costmap = np.maximum(costmap, decay.astype(np.float32))
+        except ImportError:
+            # Fallback: max-filter dilation with hard-coded decay.
+            dilate_cells = int(self._inflation_radius / self._resolution)
+            if dilate_cells > 0:
+                from scipy.ndimage import maximum_filter
 
-        # Dilate the costmap using max filter over inflated radius.
-        dilate_cells = int(self._inflation_radius / self._resolution)
-        if dilate_cells > 0:
-            size = dilate_cells * 2 + 1
-            inflated = maximum_filter(costmap, size=size, mode="constant", cval=0.0)
-            # Decay cost with distance.
-            costmap = np.maximum(costmap, inflated * 0.8)
+                size = dilate_cells * 2 + 1
+                inflated = maximum_filter(costmap, size=size, mode="constant", cval=0.0)
+                costmap = np.maximum(costmap, inflated * 0.8)
 
         return costmap
 

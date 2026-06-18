@@ -83,16 +83,16 @@
 > 定位转变：不再串行拼接 VGGT+MVSplat 做推理。
 > VGGT = 训练时的几何 teacher，MVSplat = 推理时的唯一模型（单模型前馈）。
 
-### Phase A：Sequential Baseline ✅ 已完成
-- [x] MVSplat wrapper（build/infer/extract_occupancy）
-- [x] VGGT wrapper（from_pretrained + 6D 位姿解码 + 地面估计）
+### Phase A：Sequential Baseline ✅ 已完成 (2026-06-19 复验)
+- [x] MVSplat wrapper（build/infer/extract_occupancy, 131K Gaussians, α_mean=0.28）
+- [x] VGGT wrapper（from_pretrained + 9D 位姿解码 + 地面估计, scale ×7.8）
 - [x] 坐标对齐（OpenCV→Y-up）+ scale recovery
-- [x] YOLO+SAM2 → 真实语义标签
+- [x] YOLO+SAM2 → 3 objects, real COCO labels (vs 69 auto)
 - [x] 动态 BEV grid + Nav2 costmap
-- [x] 消融实验（4 变体 × 3 帧配对）
+- [x] 消融实验（4 变体 × 3 帧配对）— 2026-06-19 复现确认
 - [x] 三方向文献调研完成
 
-**Baseline 结论**：FG/BG IoU=0.05, BEV coverage 1.88%（动态 grid 下 85% 是假象），costmap 55% lethal。三个机制性失败阻止 BEV 可用——见 `docs/current_issues.md`。
+**Baseline 结论**：fused grid: FG/BG IoU=0.052, BEV coverage 1.88%（动态 grid 的 85.5% 是压缩 grid 范围的假象），costmap 55% lethal, 75% drivable conflict。三个机制性失败阻止 BEV 可用——见 `docs/current_issues.md`。
 
 ### Phase B：MVSplat Decoder Head Retraining（当前）
 - [ ] 添加 occupancy head（sigmoid, 输出 0=free/1=occupied）

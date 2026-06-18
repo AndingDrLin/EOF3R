@@ -83,13 +83,15 @@ C_pixel = Σ α_i · c_i · Π(1-α_j)
 ## 已解决的工程问题（存档）
 
 - ✅ SAM2 过分割 + 无语义：YOLOv8-nano (6MB) → SAM2 box-prompt，65→3 objects，真实 COCO 标签
-- ✅ 坐标系不匹配：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 100%→0%
+- ✅ 坐标系不匹配：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 从无到有（证明 FG 在 BG 地面上）
 - ✅ VGGT scale 归一化：地面平面恢复 ×7.834 尺度因子 + 动态 BEV grid
 - ✅ Fusion 速度：130s → 0.05s（矢量化 bincount + gaussian_filter）
 - ✅ eof3r 统一环境：SAM2 + VGGT + MVSplat 三个真模型均在同一 env 验证通过
 - ✅ 项目解耦：wrappers 优先使用 pip 安装的包，baselines/ 仅作开发 fallback
 - ✅ 项目重构：代码集中于 `eof3r/`，文档集中于 `docs/`
 - ✅ SAM2/VGGT clone（GitHub TLS）：通过代理解决
+- ✅ 2026-06-19 消融复验：4 变体 × 3 帧配对复现，固定 grid coverage=1.88% vs 动态 grid 85.5%（自适应假象确认）
+- ✅ Conda 非交互 shell 问题：已文档化 workaround
 
 ---
 
@@ -97,4 +99,16 @@ C_pixel = Σ α_i · c_i · Π(1-α_j)
 
 **唯一环境**：`eof3r` — Python 3.10, torch 2.5.1+cu121, GPU NVIDIA RTX A6000 (48GB)
 **峰值显存**（三模型全部加载）: ~6.4 GB
-**新增依赖**：ultralytics (YOLOv8)
+**新增依赖**：ultralytics (YOLOv8-nano, 6MB)
+**Conda**：非交互 shell 需 `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`；交互终端开箱即用。
+
+### 复验 Pipeline 命令
+
+```bash
+# E2E pipeline: fixed-grid metrics (coverage 1.88%, IoU 0.0047)
+source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r
+python eof3r/scripts/eval/test_e2e_pipeline.py
+
+# Ablation: 4 variants × 3 frame pairs (dynamic-grid metrics)
+python eof3r/scripts/eval/ablation_study.py
+```

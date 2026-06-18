@@ -76,11 +76,13 @@
 
 ### 路线
 
-- [x] Phase A：Sequential Baseline — 三模型串行推理（用于消融对比）
-  - [x] MVSplat wrapper: build/infer/extract_occupancy
-  - [x] VGGT wrapper: from_pretrained + 6D 位姿解码 + 地面估计
+- [x] Phase A：Sequential Baseline — 三模型串行推理（用于消融对比）✅ 2026-06-19 复验完成
+  - [x] MVSplat wrapper: build/infer/extract_occupancy (131K Gaussians, 3.6s)
+  - [x] VGGT wrapper: from_pretrained + 9D 位姿解码 + 地面估计 (scale ×7.8, 13.6s)
   - [x] 坐标对齐（OpenCV→Y-up）+ scale recovery
-  - [x] 消融实验（4 变体 × 3 帧配对）
+  - [x] YOLO+SAM2 → 3 real objects (4.2s)
+  - [x] 消融实验（4 变体 × 3 帧配对）— 复现确认
+  - [x] **结论**：IoU=0.052, cov=1.88%(fixed), lethal=55%, conflict=75% → 三个机制性失败确认
 - [ ] Phase B：MVSplat Decoder Retraining — 用 VGGT 几何信号训练新 head
   - [ ] 添加 occupancy head（sigmoid, 输出 0=free / 1=occupied）
   - [ ] 添加 semantic head（per-Gaussian class logits）
@@ -113,11 +115,11 @@
 
 ### 路线
 
-- [x] VGGT 推理 pipeline 搭建完成
-- [x] Depth / pointmap / 相机位姿提取
-- [x] 坐标系统一（OpenCV→Y-up）+ scale recovery
+- [x] VGGT 推理 pipeline 搭建完成（13.6s, 1B model）
+- [x] Depth / pointmap / 相机位姿提取（pointmap: 2×280×504×3, poses: 9D format）
+- [x] 坐标系统一（OpenCV→Y-up）+ scale recovery（×7.8 via ground plane, h=1.5m）
 - [x] 地面平面估计 + 可通行区域
-- [ ] **提取训练监督信号**：
+- [ ] **提取训练监督信号**（Phase B 核心前置任务）：
   - [ ] Per-pixel depth → binary silhouette（occupancy 监督）
   - [ ] Pointmap → 3D 点密度约束（scale 正则化）
   - [ ] Free-space rays → FREE/OCCUPIED/UNKNOWN mask（三值监督）

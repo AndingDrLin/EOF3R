@@ -73,8 +73,8 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 - [x] 方向调整：从纯 3D 重建扩展为机器人感知系统（2026-05）
 - [x] Stage 1：文献调研完成（12 个方向，24 篇笔记）
 - [ ] Stage 2：数据准备（Re10k 公开数据可用，待录制 campus rosbag）
-- [x] **Phase A：Sequential Baseline** — SAM2+MVSplat+VGGT 串行拼接 E2E 跑通，消融实验完成
-- [ ] **Phase B：MVSplat Decoder Retraining** — 跨模型几何蒸馏，VGGT 作 teacher（当前）
+- [x] **Phase A：Sequential Baseline** ✅ — E2E 跑通，消融完成。IoU=0.052, cov=1.88%, lethal=55%
+- [ ] **Phase B：MVSplat Decoder Retraining** 🔜 — 跨模型几何蒸馏，VGGT 作 teacher（下一步）
 - [ ] Phase C：可微 BEV + Free-Space Carving
 - [ ] Phase D：端到端 Planning Loss
 - [x] 统一环境：`eof3r` conda env (Python 3.10, torch 2.5.1, CUDA 12.1, RTX A6000)

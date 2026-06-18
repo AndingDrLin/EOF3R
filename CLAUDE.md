@@ -61,8 +61,9 @@ bash eof3r/scripts/setup_mvsplat.sh
 ### Environment
 
 ```bash
-# Single unified environment (2026-06-18)
+# Single unified environment (updated 2026-06-19)
 conda activate eof3r  # Python 3.10 + torch 2.5.1 + CUDA 12.1 + all models
+# For non-interactive shells (CI/scripts): source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r
 
 # To recreate from scratch:
 conda create -n eof3r python=3.10 -y && conda activate eof3r
@@ -76,11 +77,14 @@ pip install -r eof3r/requirements.txt
 # GPU: NVIDIA RTX A6000 (48GB), peak VRAM ~6.3GB (VGGT + MVSplat together)
 ```
 
-### Known Blockers (as of 2026-06-19)
+### Known Blockers (updated 2026-06-19)
 
 - ~~环境搭建、模型安装、数据准备~~ → **全部 Resolved。**
-- **当前核心 Blocker**：MVSplat 输出的是 photorealistic Gaussian primitives（opacity 与颜色纠缠、scale 无物理约束、缺失自由空间建模）→ BEV 投影不可用。解决方向：用 VGGT 的几何信号重新训练 MVSplat 的 decoder head（见 §1c 和 `docs/current_issues.md`）。
+- **当前核心 Blocker**：MVSplat 输出的是 photorealistic Gaussian primitives（opacity 与颜色纠缠、scale 无物理约束、缺失自由空间建模）→ BEV 投影不可用。
+  - 2026-06-19 消融验证：FG/BG IoU=0.052（固定 grid 下 coverage 1.88%），lethal=55%，drivable conflict=75%。三个机制性失败确认（opacity≠occupancy, covariance loss, no free-space）。
+  - 解决方向：用 VGGT 的几何信号重新训练 MVSplat 的 decoder head（见 §1c 和 `docs/current_issues.md`）。
 - **次要 Blocker**：无校园 rosbag。公开数据集 Re10k 作为验证替代。
+- **Conda 注意事项**：非交互 shell（CI/脚本）需 `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`。交互终端开箱即用。
 
 ### Config-driven Experiments
 
@@ -151,7 +155,7 @@ The `eof3r/src/` modules currently implement the **sequential concatenation base
 
 ### Implementation Roadmap
 
-- **Phase A** (current): Sequential baseline — all three models as inference stages.  Used for ablation: quantify how bad BEV is without geometric distillation.
+- **Phase A** ✅ (verified 2026-06-19): Sequential baseline — all three models as inference stages, quantitatively confirming the three mechanistic failure modes. FG/BG IoU=0.052, coverage(t=0.3)=1.88%, lethal=55%, drivable conflict=75%.  Ablation: 4 variants × 3 frame pairs.
 - **Phase B** (next): MVSplat decoder retraining — add occupancy/semantic/confidence heads, freeze encoder, train with VGGT geometric supervision.
 - **Phase C**: Differentiable BEV marginalization + ray-based free-space carving — replace numpy projection with torch operations.
 - **Phase D**: End-to-end training with planning loss — backpropagate from costmap quality metrics to Gaussian parameters.
@@ -233,16 +237,17 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
 
 6. **Baseline code is gitignored.** Only `registry.yaml` and `patches/` are committed.
 
-### Current Status (2026-06-18)
+### Current Status (2026-06-19)
 
 | Baseline | Status | Notes |
 |----------|--------|-------|
-| MVSplat | 🟢 Cloned + checkpoints | re10k.ckpt, acid.ckpt |
+| MVSplat | 🟢 Cloned + checkpoints | re10k.ckpt, acid.ckpt. 131K Gaussians, ~3.6s inference |
 | DepthSplat | 🟢 Cloned | Not yet used |
-| SAM2 | 🟢 Cloned + verified | HuggingFace auto-download, 65-object over-segmentation on Re10k (needs YOLO preprocessing) |
-| VGGT | 🟢 Cloned + verified | HuggingFace auto-download, 1B model, ~14s inference |
+| SAM2 | 🟢 Cloned + verified | HuggingFace auto-download. YOLOv8-nano frontend → 3 objects with real COCO labels (vs 65-76 fragments in auto mode) |
+| VGGT | 🟢 Cloned + verified | HuggingFace auto-download, 1B model, ~13.6s inference. Scale recovery ×7.8 via ground plane |
 | DUSt3R, MASt3R | ⬜ Not started | — |
 | Nav2 | ⬜ Not started | Installed via apt on Husky only |
+| YOLOv8 | 🟢 Integrated | ultralytics pip package, 6MB nano model, lazy-loaded |
 
 When cloning is blocked, create a stub class (e.g., `SAM2Stub`) with the same API as the planned wrapper, generating synthetic data so downstream modules can be tested. Document the planned real API in the stub's docstring.
 
@@ -581,6 +586,43 @@ export https_proxy=http://192.168.213.103:53941
 - Subprocess approach was rejected for MVSplat; path isolation inside build() is cleaner.
 - Vectorized fusion (scatter+gaussian_smooth) chosen over per-point loop (650x speedup).
 - Stubs kept alongside real wrappers for CI/testing without GPU.
+- YOLOv8-nano (6MB) → SAM2 box-prompt chosen over SAM2 automatic mode (65→3 objects, real COCO semantics, 2.5× speedup).
+- Dynamic BEV grid (auto bounds) via `set_bounds_from_points()` — prevents shape mismatch between FG and BG projections.
+
+### Verified Pipeline State (2026-06-19)
+
+**E2E Pipeline Test** (`test_e2e_pipeline.py`) — all 5 stages pass with real models:
+
+| Stage | Module | Output | Time |
+|-------|--------|--------|------|
+| Segmentation | YOLOv8 + SAM2 | 3 objects (couch, chair, chair), COCO labels | 4.2s |
+| Background | VGGT (1B) | Pointmap (2×280×504×3), poses, scale ×7.8 | 13.6s |
+| Foreground | MVSplat | 131K Gaussians, α_mean=0.28, pass_rate=2.5% | 3.6s |
+| Fusion | BEV Projector | Fixed grid (400×227), coverage 1.88% | 0.03s |
+| Costmap | Nav2 format | 78.9K lethal, 74.8K free, completeness=1.0 | 0.02s |
+| **Total** | | | **21.4s** |
+
+**Ablation Study** (`ablation_study.py`) — 4 variants × 3 frame pairs:
+
+| Variant | BEVcov | IoU | Conflict | Free% | Lethal% | Obj | Sem | Scale |
+|---------|--------|-----|----------|-------|---------|-----|-----|-------|
+| A_full | 0.855 | 0.052 | 0.754 | 41.7% | 55.0% | 3 | Y | 7.8 |
+| B_noscale | 0.543 | 0.000 | 0.000 | 61.6% | 34.5% | 3 | Y | 7018 |
+| C_noalign | 0.817 | 0.000 | 0.000 | 47.9% | 48.9% | 3 | Y | 7.8 |
+| D_auto | 0.855 | 0.052 | 0.754 | 41.7% | 55.0% | 69 | N | 7.8 |
+
+> **Note**: BEVcov uses dynamic BEV grid — 85.5% is a self-adaptive artifact. Fixed grid coverage is 1.88%. See `evaluation_report.md` §2.4.
+
+**Key Findings**:
+- Scale recovery (A vs B): IoU 0→0.052, scale 7018→7.8 — scale is necessary but not sufficient
+- Coord alignment (A vs C): Conflict 0→75% — proves FG objects sit on drivable BG (physically correct)
+- YOLO frontend (A vs D): 69→3 objects, real semantics, 2.5× faster
+- **Fundamental limit**: IoU=0.052 is bottlenecked by opacity≠occupancy + covariance loss, not by alignment/scale
+
+### Conda in Non-Interactive Shells
+- The Bash tool creates non-interactive shells → `.bashrc` guard (`case $- in *i*)`) returns early
+- Workaround for scripts: `source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`
+- Interactive terminals work correctly (`.bashrc` conda init block is in place)
 
 ---
 

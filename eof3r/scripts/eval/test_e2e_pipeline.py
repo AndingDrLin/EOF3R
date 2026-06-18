@@ -485,7 +485,7 @@ def main() -> None:
                 "rotations": None,
             })()
         else:
-            fg.build(checkpoint_path=checkpoint_path)
+            fg.build(checkpoint_path=checkpoint_path, mvsplat_root=str(MVSPLAT_ROOT))
 
             # Build minimal input: B=1, V=2 context views.
             v = 2

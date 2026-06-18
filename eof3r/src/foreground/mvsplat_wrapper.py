@@ -1,7 +1,9 @@
 """MVSplat feedforward Gaussian occupancy wrapper.
 
-Wraps MVSplat (baselines/mvsplat/) to produce Gaussians with occupancy info.
-Logic adapted from scripts/eval/verify_mvsplat_bev.py.
+To use:
+  1. git clone https://github.com/donydchen/mvsplat.git
+  2. Set MVSPLAT_ROOT env var or pass mvsplat_root= to build().
+  3. If MVSplat is not available, use --skip-mvsplat for synthetic Gaussians.
 
 Provides:
   build()  — load MVSplat model from checkpoint
@@ -20,11 +22,41 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# ---- MVSplat paths ----
-_MVSPLAT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "mvsplat"
+
+def _resolve_mvsplat_root(mvsplat_root: str | None = None) -> Path:
+    """Resolve MVSplat root directory.
+
+    Priority: 1) explicit parameter, 2) MVSPLAT_ROOT env var,
+    3) local baselines/mvsplat/ for dev, 4) error.
+    """
+    if mvsplat_root is not None:
+        p = Path(mvsplat_root)
+        if p.exists():
+            return p
+        raise FileNotFoundError(f"MVSplat root not found: {mvsplat_root}")
+
+    env_root = os.environ.get("MVSPLAT_ROOT")
+    if env_root is not None:
+        p = Path(env_root)
+        if p.exists():
+            return p
+        raise FileNotFoundError(f"MVSPLAT_ROOT is set but path does not exist: {env_root}")
+
+    # Development fallback: local baselines/ directory.
+    dev_root = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "mvsplat"
+    if dev_root.exists():
+        return dev_root
+
+    raise FileNotFoundError(
+        "MVSplat not found. Either:\n"
+        "  1. export MVSPLAT_ROOT=/path/to/mvsplat\n"
+        "  2. Pass mvsplat_root='/path/to/mvsplat' to build()\n"
+        "  3. Clone into baselines/mvsplat/ for development\n"
+        "  Source: https://github.com/donydchen/mvsplat"
+    )
 
 
-def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:
+def _ensure_mvsplat_on_path(mvsplat_root: str) -> tuple[str, list[str], dict]:
     """Register MVSplat source onto sys.path and chdir to MVSplat root.
 
     MVSplat's src/ package conflicts with our project's src/.
@@ -38,8 +70,9 @@ def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:
     """
     import importlib
 
-    mvsplat_root = str(_MVSPLAT_ROOT)
-    mvsplat_src = str(_MVSPLAT_ROOT / "src")
+    root = Path(mvsplat_root)
+    mvsplat_root_str = str(root)
+    mvsplat_src = str(root / "src")
 
     # Save current state.
     saved_path = list(sys.path)
@@ -51,10 +84,10 @@ def _ensure_mvsplat_on_path() -> tuple[str, list[str], dict]:
 
     # Clear all user paths, keep only system + MVSplat paths.
     system_paths = [p for p in sys.path if "site-packages" in p or "python3" in p or p in ("", "/usr/lib")]
-    sys.path[:] = [mvsplat_root, mvsplat_src] + system_paths
+    sys.path[:] = [mvsplat_root_str, mvsplat_src] + system_paths
 
     importlib.invalidate_caches()
-    os.chdir(mvsplat_root)
+    os.chdir(root)
     return previous_cwd, saved_path, saved_modules
 
 
@@ -107,14 +140,18 @@ class MVSplatWrapper:
         self,
         checkpoint_path: str,
         config_overrides: dict | None = None,
+        mvsplat_root: str | None = None,
     ) -> None:
         """Load MVSplat model from checkpoint.
 
         Args:
             checkpoint_path: Path to .ckpt file (e.g. checkpoints/re10k.ckpt).
             config_overrides: Optional hydra-style overrides dict.
+            mvsplat_root: Path to MVSplat repo root.  If None, uses MVSPLAT_ROOT
+                env var or local baselines/mvsplat/ fallback.
         """
-        previous_cwd, saved_path, saved_modules = _ensure_mvsplat_on_path()
+        root = _resolve_mvsplat_root(mvsplat_root)
+        previous_cwd, saved_path, saved_modules = _ensure_mvsplat_on_path(str(root))
 
         import hydra
         from hydra.core.global_hydra import GlobalHydra

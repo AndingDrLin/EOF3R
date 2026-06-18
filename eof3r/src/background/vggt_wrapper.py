@@ -1,37 +1,41 @@
 """VGGT background estimation wrapper — real model interface.
 
-Replaces VGGTStub when vggt is installed.
-
 To use:
-  1. Install VGGT: pip install -e baselines/vggt/ (needs torch 2.3.1+)
+  1. pip install git+https://github.com/facebookresearch/vggt.git
   2. First run downloads the checkpoint from HuggingFace automatically.
   3. If VGGT is not installed or CUDA is unavailable, falls back to VGGTStub.
 
 API: build() loads the model; infer(images) returns pointmap, camera_poses,
-ground_plane, drivable_mask in Y-up convention.
+ground_plane, drivable_mask.
 """
 
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_VGGT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "vggt"
-
+# Try native import first (pip-installed), then local baselines/ for dev.
 _VGGT_AVAILABLE = False
-if str(_VGGT_ROOT) not in sys.path:
-    sys.path.insert(0, str(_VGGT_ROOT))
 try:
     from vggt.models.vggt import VGGT
 
     _VGGT_AVAILABLE = True
 except ImportError:
-    pass
+    import sys
+
+    _VGGT_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "vggt"
+    if _VGGT_ROOT.exists():
+        sys.path.insert(0, str(_VGGT_ROOT))
+        try:
+            from vggt.models.vggt import VGGT
+
+            _VGGT_AVAILABLE = True
+        except ImportError:
+            pass
 
 # Default HuggingFace model IDs.
 _VGGT_CHECKPOINTS = {
@@ -84,7 +88,8 @@ class VGGTWrapper:
         """
         if not _VGGT_AVAILABLE:
             raise ImportError(
-                "VGGT is not installed. Run: pip install -e baselines/vggt/\n"
+                "VGGT is not installed. Run:\n"
+                "  pip install git+https://github.com/facebookresearch/vggt.git\n"
                 "Requires torch>=2.3.1. Current torch: "
                 f"{_get_torch_version()}"
             )

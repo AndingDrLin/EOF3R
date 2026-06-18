@@ -1,5 +1,10 @@
-# Claude Code internal
-.claude/
+# --- Editors & tools ---
+.claude/*
+!.claude/settings.json  # project-level Claude Code config (committable)
+.idea/
+.vscode/
+*.swp
+*.swo
 # CLAUDE.md is TRACKED (project constitution + memory)
 
 # Python
@@ -85,3 +90,20 @@ log/
 
 # Python version
 .python-version
+
+# --- Misc caches ---
+*.pyc
+__pycache__/
+.ipynb_checkpoints/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+eggs/
+.eggs/
+
+# --- Environment secrets (NEVER commit) ---
+.env
+*.secret
+*.key
+credentials.*

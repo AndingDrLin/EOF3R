@@ -71,10 +71,30 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 
 ---
 
+## 快速开始
+
+```bash
+# 1. 创建环境
+conda create -n eof3r python=3.10 -y && conda activate eof3r
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# 2. 安装模型依赖（三个模型均为开源，pip 一键安装）
+pip install git+https://github.com/facebookresearch/sam2.git      # SAM2 分割
+pip install git+https://github.com/facebookresearch/vggt.git      # VGGT 背景几何
+# MVSplat 需 clone 到本地后 export MVSPLAT_ROOT=/path/to/mvsplat
+# https://github.com/donydchen/mvsplat
+
+# 3. 安装本项目的依赖
+pip install -r eof3r/requirements.txt
+
+# 4. 运行 E2E 测试
+python eof3r/scripts/eval/test_e2e_pipeline.py
+```
+
 ## 环境
 
 - **开发环境**: `conda activate eof3r` — Python 3.10, PyTorch 2.5.1, CUDA 12.1, RTX A6000 (48GB)
-- **基线环境**: `conda activate mvsplat` — PyTorch 2.1.2, CUDA 11.8 (仅 MVSplat 独立测试)
+- **无 GPU 测试**: 使用 `--skip-mvsplat` 标志跳过 MVSplat，使用合成高斯球
 - **车端**: ROS2 Humble（Husky 车载计算机）
 - 详见 `eof3r/requirements.txt`
 

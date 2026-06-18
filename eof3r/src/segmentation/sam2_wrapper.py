@@ -1,9 +1,7 @@
 """SAM2 segmentation wrapper — real model interface.
 
-Replaces SAM2Stub when sam2 is installed.
-
 To use:
-  1. Install SAM2: pip install -e baselines/sam2/
+  1. pip install git+https://github.com/facebookresearch/sam2.git
   2. The checkpoint is downloaded automatically from HuggingFace on first use.
   3. If SAM2 is not installed, SAM2Stub is used as fallback.
 
@@ -13,25 +11,33 @@ API compatible with the stub: segment() returns masks, boxes, labels, scores.
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_SAM2_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "sam2"
-
+# Try native import first (pip-installed), then local baselines/ for dev.
 _SAM2_AVAILABLE = False
-if str(_SAM2_ROOT) not in sys.path:
-    sys.path.insert(0, str(_SAM2_ROOT))
 try:
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
     from sam2.build_sam import build_sam2_hf
 
     _SAM2_AVAILABLE = True
 except ImportError:
-    pass
+    # Fallback: try local baselines/ directory (development only).
+    import sys
+
+    _SAM2_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "baselines" / "sam2"
+    if _SAM2_ROOT.exists():
+        sys.path.insert(0, str(_SAM2_ROOT))
+        try:
+            from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+            from sam2.build_sam import build_sam2_hf
+
+            _SAM2_AVAILABLE = True
+        except ImportError:
+            pass
 
 # Class name → risk-aware label mapping.
 _CLASS_MAPPING: dict[int, str] = {
@@ -92,7 +98,8 @@ class SAM2Wrapper:
 
         if not _SAM2_AVAILABLE:
             raise ImportError(
-                "SAM2 is not installed. Run: pip install -e baselines/sam2/\n"
+                "SAM2 is not installed. Run:\n"
+                "  pip install git+https://github.com/facebookresearch/sam2.git\n"
                 "Requires torch>=2.5.1. Current torch: "
                 f"{_get_torch_version()}"
             )

@@ -281,7 +281,7 @@ def save_visualizations(
     axes[1, 1].set_title("Per-Stage Wall Time")
     axes[1, 1].set_ylabel("Time (s)")
     axes[1, 1].tick_params(axis="x", rotation=45)
-    for i, (s, t) in enumerate(zip(stages, times_s, strict=False)):
+    for i, (_s, t) in enumerate(zip(stages, times_s, strict=False)):
         axes[1, 1].text(i, t + 0.02, f"{t:.2f}s", ha="center", fontsize=8)
 
     # 6. Text summary
@@ -457,7 +457,6 @@ def main() -> None:
             "harmonics": np.zeros((n_synthetic, 3, 1), dtype=np.float32),
             "rotations": None,
         })()
-        fg_metadata = {"occupancy_alpha": opacities, "n_gaussians": n_synthetic}
         print("  Using synthetic Gaussian data.")
     else:
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
@@ -485,7 +484,6 @@ def main() -> None:
                 "harmonics": np.zeros((n_synthetic, 3, 1), dtype=np.float32),
                 "rotations": None,
             })()
-            fg_metadata = {"occupancy_alpha": opacities, "n_gaussians": n_synthetic}
         else:
             fg.build(checkpoint_path=checkpoint_path)
 
@@ -508,7 +506,6 @@ def main() -> None:
 
             fg_result = fg.infer(images, poses, K)
             g_data = fg_result["gaussians"]
-            fg_metadata = fg_result["metadata"]
 
     stage_times["foreground"] = round(time.perf_counter() - t0, 4)
 

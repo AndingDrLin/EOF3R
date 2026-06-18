@@ -36,32 +36,46 @@ This file itself is in Chinese for §1 and English for code-facing sections — 
 ## §1b Development Commands
 
 ```bash
+# End-to-end pipeline test (with full quantitative metrics)
+conda activate mvsplat  # workaround: eof3r env not yet created
+python scripts/eval/test_e2e_pipeline.py --skip-mvsplat
+# Omit --skip-mvsplat on GPU machines with MVSplat checkpoint available.
+# Outputs: outputs/eval/e2e_metrics.json + e2e_pipeline_visualization.png
+
+# BEV projection verification (MVSplat only)
+conda activate mvsplat
+cd baselines/mvsplat && python ../../scripts/eval/verify_mvsplat_bev.py
+
 # Lint & format (auto-fix)
-ruff check --fix src/ scripts/ tests/
-ruff format src/ scripts/ tests/
+ruff check --fix src/ scripts/
+ruff format src/ scripts/
 
 # Pre-commit (runs ruff + trailing-whitespace + large-file check)
 pre-commit run --all-files
-
-# Run tests
-pytest tests/ -v
-
-# Run a single test file
-pytest tests/test_fusion.py -v
 
 # Setup a baseline (example: mvsplat)
 bash scripts/setup_mvsplat.sh
 # Each baseline has its own setup script and conda env (see baselines/registry.yaml)
 ```
 
-### Environment Setup
+### Environment
 
 ```bash
+# eof3r env not yet created. Workaround: use baseline envs.
+conda activate mvsplat     # for foreground inference (torch 2.1 + CUDA 11.8)
+conda activate depthsplat  # alternative feedforward 3DGS env
+
+# To create eof3r proper:
 conda create -n eof3r python=3.10 -y
 conda activate eof3r
 pip install -r requirements.txt
 pre-commit install
 ```
+
+### Known Blockers
+
+- **SAM2 / VGGT cannot be cloned** from current network — GitHub TLS handshake failure. Both use stubs (`SAM2Stub`, `VGGTStub`) that generate synthetic data for pipeline testing. Replace with real wrappers after cloning from a network that can reach GitHub.
+- **MVSplat real inference** requires GPU + `baselines/mvsplat/checkpoints/re10k.ckpt`. The test script flags `--skip-mvsplat` for CI/testing without GPU.
 
 ### Config-driven Experiments
 
@@ -108,12 +122,22 @@ Input: RGB images + camera intrinsics
            └─────────────────┘
 ```
 
-**Key interfaces between modules:**
-- `segmentation` → `foreground`: object masks, bounding boxes, class labels
-- `segmentation` → `background`: background region mask
-- `foreground` / `background` → `fusion`: aligned 3D Gaussians / pointmaps in shared Y-up coords
-- `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame
-- `costmap` → ROS2: published as Nav2-compatible costmap layer
+**Key interfaces between modules (actual class names):**
+- `segmentation` → `foreground`: object masks (SAM2Stub → MVSplatWrapper)
+- `segmentation` → `background`: background region mask (SAM2Stub → VGGTStub)
+- `foreground` / `background` → `fusion`: aligned 3D Gaussians (numpy) / pointmaps in shared Y-up coords
+- `fusion` → `costmap`: BEV occupancy grid in Z-up robot frame (BEVProjector → CostmapGenerator)
+- `costmap` → ROS2: uint8 costmap array (0=free, 254=lethal), not yet published to ROS topic
+
+**Stub vs Real Status (as of 2025-06-18):**
+| Module | File | Status |
+|--------|------|--------|
+| segmentation | `sam2_stub.py` | 🟡 Stub (SAM2 blocked by GitHub TLS) |
+| foreground | `mvsplat_wrapper.py` | 🟢 Real MVSplat wrapper (build/infer/extract_occupancy) |
+| background | `vggt_stub.py` | 🟡 Stub (VGGT blocked by GitHub TLS) |
+| fusion | `bev_projector.py`, `coord_utils.py` | 🟢 Real (Y-up→Z-up, BEV projection, FG/BG fusion) |
+| costmap | `costmap_generator.py` | 🟢 Real (Nav2 uint8 format, semantic weights, inflation) |
+| communication | `__init__.py` only | 🔴 Empty stub |
 
 ---
 
@@ -159,20 +183,21 @@ EOF3R/
 │   └── patches/                    # Patches applied on top of upstream baselines
 │
 ├── scripts/                        # Standalone scripts (runnable, not importable)
-│   ├── preprocess/
-│   ├── eval/
-│   └── robot/                       # Husky launch/ROS2 config scripts
+│   ├── preprocess/                 # [empty]
+│   ├── eval/test_e2e_pipeline.py   # Full 5-stage E2E test with quantitative metrics
+│   ├── eval/verify_mvsplat_bev.py  # MVSplat → BEV verification
+│   └── robot/                      # Husky launch/ROS2 config scripts [.gitkeep only]
 │
 ├── src/                            # Core source code (importable Python package)
 │   ├── __init__.py
-│   ├── segmentation/               # Scene decomposition (SAM2 / YOLO wrapper)
-│   ├── foreground/                 # Object-level G2O-inspired feedforward Gaussian occupancy
-│   ├── background/                 # 3R background geometry estimation (VGGT/DUSt3R/MASt3R)
-│   ├── fusion/                     # Coordinate alignment + BEV projection
-│   ├── costmap/                    # BEV semantic occupancy costmap generation
-│   ├── communication/              # Vehicle-cloud async communication layer
-│   ├── demo/                       # ROS2 navigation demo (Husky robot)
-│   └── utils/                      # Shared utilities (IO, visualization, metrics)
+│   ├── segmentation/               # Scene decomposition (SAM2Stub → future SAM2Wrapper)
+│   ├── foreground/                 # MVSplatWrapper — feedforward Gaussian occupancy
+│   ├── background/                 # VGGTStub → future VGGTWrapper
+│   ├── fusion/                     # BEVProjector + coord_utils (Y-up↔Z-up)
+│   ├── costmap/                    # CostmapGenerator (Nav2 uint8 format)
+│   ├── communication/              # [stub only] Vehicle-cloud async communication
+│   ├── demo/                       # [empty] ROS2 navigation demo
+│   └── utils/                      # [empty] Shared utilities
 │
 ├── data/                           # NOT version-controlled
 │   ├── test_fixtures/              # Small test data (<1MB, committed)
@@ -230,6 +255,19 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
 5. **Pre-trained weights** go to `outputs/checkpoints/{baseline_name}/`, not inside `baselines/`.
 
 6. **Baseline code is gitignored.** Only `registry.yaml` and `patches/` are committed.
+
+### Current Status (2025-06-18)
+
+| Baseline | Status | Notes |
+|----------|--------|-------|
+| MVSplat | 🟢 Cloned + checkpoints | re10k.ckpt, acid.ckpt |
+| DepthSplat | 🟢 Cloned | Not yet used, not in registry.yaml |
+| SAM2 | 🔴 Blocked | GitHub TLS handshake failure — using SAM2Stub |
+| VGGT | 🔴 Blocked | GitHub TLS handshake failure — using VGGTStub |
+| DUSt3R, MASt3R | ⬜ Not started | — |
+| Nav2 | ⬜ Not started | Installed via apt on Husky only |
+
+When cloning is blocked, create a stub class (e.g., `SAM2Stub`) with the same API as the planned wrapper, generating synthetic data so downstream modules can be tested. Document the planned real API in the stub's docstring.
 
 ---
 
@@ -398,6 +436,24 @@ All methods in the same comparison use the same random seed and data split.
 Report all metrics to 3 significant figures.
 PSNR/SSIM/LPIPS reflect rendering quality, not planning utility. They are tracked for diagnostic purposes only.
 
+### Quantitative Testing Convention (mandatory)
+
+**Never rely on visual comparison of images alone.** Every test MUST output a JSON metrics file alongside any visualization. The E2E test (`scripts/eval/test_e2e_pipeline.py`) demonstrates this pattern.
+
+Five metric categories required in every pipeline test:
+
+| Category | Key Metrics | Description |
+|----------|-------------|-------------|
+| **BEV Occupancy** | `bev_occupancy_coverage_t{0.1,0.3,0.5,0.7}`, `bev_occupancy_density`, `bev_spatial_extent_m2` | Coverage at multiple alpha thresholds |
+| **Gaussian Quality** | `num_gaussians_total`, `opacity_mean/std/min/max`, `alpha_threshold_pass_rate`, `gaussian_spatial_range_{x,y,z}` | Per-Gaussian statistics |
+| **Fusion Consistency** | `fg_bev_coverage`, `bg_bev_coverage`, `fg_bg_overlap_iou`, `drivable_occupancy_conflict_rate` | FG/BG overlap and conflict |
+| **Costmap Validity** | `costmap_min/max`, `lethal_cell_count`, `free_cell_count`, `costmap_completeness` | Nav2 format correctness |
+| **Timing** | `stage_times.{segmentation,background,foreground,fusion,costmap}`, `total_wall_time_s`, `peak_gpu_memory_mb` | Per-stage profiling |
+
+Output convention:
+- `outputs/eval/e2e_metrics.json` — all metrics as one flat dict
+- `outputs/eval/e2e_pipeline_visualization.png` — supplementary visualization only
+
 ---
 
 ## §8 Thesis Materials
@@ -429,9 +485,7 @@ thesis/
 
 ### Branch Strategy
 
-- `main` — always stable, runnable.
-- `stage/N` — development branch for each stage. Squash-merge into `main` when the stage is done.
-- Never commit directly to `main` (except Stage 0 initial setup).
+- `main` — always stable, runnable. Stage 0-3 work was committed directly to main (solo dev, fast iteration). For Stage 4+ (involving ROS2/Husky), use `stage/N` branches and squash-merge.
 
 ### Commit Messages
 
@@ -469,10 +523,19 @@ thesis/
 
 ### Primary Environment
 
-- **Name**: `eof3r`
+- **Name**: `eof3r` (not yet created — workaround: use `mvsplat` or `depthsplat` conda envs)
 - **Python**: 3.10+
-- **CUDA**: 12.x (fallback: 11.8)
+- **CUDA**: 11.8 (mvsplat env) / 12.x (target for eof3r)
 - **Manager**: conda/mamba
+
+### Current Workaround
+
+Until `eof3r` env is created, use baseline conda envs:
+```bash
+conda activate mvsplat     # torch 2.1.2+cu118 — used for all current dev
+conda activate depthsplat  # alternative
+pip install pyyaml scipy matplotlib  # add missing deps as needed
+```
 
 ### Dependency Layering
 

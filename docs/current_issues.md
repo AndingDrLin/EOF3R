@@ -51,16 +51,16 @@
 
 ---
 
-## 🟡 问题 3：SAM2 过分割
+## ✅ 问题 3：SAM2 过分割 — 已解决 (2026-06-18)
 
-**证据**：在单张 720×1280 室内图像上检测到 65 个 object，标签全是占位符轮询。
+**修复前**：单张 720×1280 图像 → 65 个碎片，标签占位符轮询。
 
-**根因**：(a) SAM2 automatic mode 的 `points_per_side=32` 对纹理丰富的场景过分割，(b) 没有语义分类器。
-
-**修复方向**：
-1. 调高 `pred_iou_thresh` 和 `stability_score_thresh`，减少碎片
-2. 集成为 YOLO-World 做框检测 → SAM2 做精细 mask（lit review 推荐的方案）
-3. 使用 `box_prompt=True` 模式代替 automatic mode
+**修复方案**：YOLOv8-nano (6MB) 做检测 + SAM2 box-prompt 精细分割。
+- YOLO 用 3 个 bbox prompt 代替 SAM2 automatic 的 32×32=1024 个网格点
+- 检测数: 65 → 3（`['couch', 'chair', 'chair']`）
+- 分割时间: 6-7s → 4.3s
+- 修复代码：`sam2_wrapper.py` `detect_and_segment()` 方法
+- 向后兼容：`segment()` 保留 automatic 模式
 
 ---
 
@@ -70,25 +70,25 @@
 
 **根因**：`_gaussian_smooth` 后除以 `bev_max` 做 re-normalization，但 grid 内只有少数点，绝大多数 cell 的 occupancy 被稀释到 0.3 以下。
 
-**修复方向**：解决问题 1+2 后重新评估；如果仍然过低，改用 `np.maximum.at` 实现 max-mode scatter（更接近老算法的行为）。
+**当前状态**：问题 1+2 已解决（坐标对齐 + scale recovery + 动态 BEV），coverage 提升至 1.88%。待实机数据验证后重新评估是否需要 max-mode scatter。
 
 ---
 
-## 🟡 问题 5：无语义分类器
+## ✅ 问题 5：无语义分类器 — 已解决 (2026-06-18)
 
-**证据**：SAM2 的 labels 全是 `["unknown", "person", "bicycle", "cone", ...]` 轮询，与图像内容无关。
+**修复前**：labels 全是 `["unknown", "person", "bicycle", ...]` 轮询占位符。
 
-**根因**：SAM2 不提供语义标签。当前 wrapper 硬编码了一个占位符列表。
-
-**修复方向**：
-1. 在 SAM2 输出的 bbox 上运行轻量分类器（如 CLIP zero-shot 或 YOLO 检测结果）
-2. 将 semantic label 写入 Gaussian metadata
-3. Costmap generator 已有 `semantic_weights`（person=1.5, cone=0.8...），只等真实标签
+**修复方案**：YOLOv8-nano 自带 COCO 80 类语义标签 + 风险等级映射。
+- 语义 BEV 已生成（2 类成功投影）
+- 风险等级映射：person=3, bicycle=2, chair=0, …
+- Costmap generator 的 `semantic_weights` 已在消费真实标签
+- 修复代码：`sam2_wrapper.py` `_COCO_CLASSES` + `_CLASS_RISK` 字典
 
 ---
 
 ## 已解决的问题（存档）
 
+- ✅ SAM2 过分割（问题 3）+ 无语义分类器（问题 5）：YOLOv8-nano (6MB) → SAM2 box-prompt，65→3 objects，真实 COCO 标签 + 风险等级
 - ✅ 坐标系不匹配（问题 1）：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 100%→0%
 - ✅ Fusion 速度：130s → 0.05s（矢量化 bincount + gaussian_filter）
 - ✅ eof3r 统一环境：SAM2 + VGGT + MVSplat 三个真模型均在同一 env 验证通过

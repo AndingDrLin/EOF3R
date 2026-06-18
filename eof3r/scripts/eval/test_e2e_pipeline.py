@@ -358,7 +358,7 @@ def main() -> None:
 
     # ---- Stage 1: Segmentation ----
     print("\n" + "-" * 50)
-    print("[Stage 1/5] Segmentation")
+    print("[Stage 1/5] Segmentation (YOLO + SAM2)")
     print("-" * 50)
     t0 = time.perf_counter()
 
@@ -371,6 +371,7 @@ def main() -> None:
     seg = SAM2(
         model_size=config.get("segmentation", {}).get("model_size", "base"),
         min_mask_area=config.get("segmentation", {}).get("min_mask_area", 500),
+        use_yolo=is_real_sam2,  # enable YOLO frontend for real SAM2
     )
     if is_real_sam2:
         try:
@@ -393,13 +394,25 @@ def main() -> None:
     else:
         print(f"  Loaded real image: {test_image.shape}")
 
-    seg_result = seg.segment(test_image, box_prompt=False)
+    # Use YOLO+SAM2 for real semantic labels, fall back to automatic for stub.
+    if is_real_sam2 and hasattr(seg, "detect_and_segment"):
+        seg_result = seg.detect_and_segment(
+            test_image,
+            yolo_conf=config.get("segmentation", {}).get("yolo_conf", 0.35),
+        )
+    else:
+        seg_result = seg.segment(test_image, box_prompt=False)
 
     stage_times["segmentation"] = round(time.perf_counter() - t0, 4)
     all_metrics["seg_num_objects"] = int(len(seg_result["masks"]))
     all_metrics["seg_is_real"] = is_real_sam2
+    all_metrics["seg_labels"] = seg_result.get("labels", [])
+    all_metrics["seg_has_semantics"] = seg_result.get("labels", ["unknown"])[0] != "unknown"
     print(f"  Objects detected: {all_metrics['seg_num_objects']}")
     print(f"  Labels: {seg_result.get('labels', 'N/A')}")
+    if seg_result.get("risk_levels"):
+        print(f"  Risk levels: {seg_result['risk_levels']}")
+    print(f"  Has semantics: {all_metrics['seg_has_semantics']}")
     print(f"  Time: {stage_times['segmentation']:.3f}s")
 
     # ---- Stage 2: Background ----
@@ -604,6 +617,8 @@ def main() -> None:
     # Enable dynamic BEV bounds — grid adapts to actual data extent.
     fusion_cfg.setdefault("bev_range", "auto")
     fusion_cfg.setdefault("bev_target_cells", 400)
+    # Use wider height filter to capture objects even with approximate scale.
+    fusion_cfg.setdefault("height_filter", [-1.0, 8.0])
     projector = BEVProjector(fusion_cfg)
 
     # Pre-compute unified BEV bounds from BOTH FG and BG data so they share
@@ -674,7 +689,43 @@ def main() -> None:
 
     costmap_cfg = config.get("costmap", {})
     cg = CostmapGenerator(costmap_cfg)
-    costmap_grid, cost_metrics_obj = cg.generate_costmap(fused_bev, bev_semantic=None)
+
+    # Build semantic BEV if we have real class labels from YOLO+SAM2.
+    bev_semantic = None
+    if seg_result.get("labels") and seg_result["labels"][0] != "unknown":
+        # Map each label string to an integer class ID for costmap coloring.
+        label_set = sorted(set(seg_result["labels"]))
+        label_to_id = {lbl: i for i, lbl in enumerate(label_set)}
+        semantic_ids = np.array([label_to_id[lbl] for lbl in seg_result["labels"]], dtype=np.int32)
+        # Project per-object semantics to BEV using the same projector.
+        # For now we use the object centers (box centers) projected to BEV.
+        # A full implementation would use the mask areas projected via the
+        # Gaussian means, but that requires per-Gaussian semantic labels
+        # which need the MVSplat→semantic pipeline (Stage 3).
+        # Here we demonstrate the semantic→costmap link with box centers.
+        boxes = seg_result["boxes"]
+        if len(boxes) > 0:
+            # Rough: convert 2D box centers to 3D via VGGT pointmap depth.
+            bg_pm = bg_result["pointmap"][0]  # (H, W, 3) Y-up
+            pm_h, pm_w = bg_pm.shape[:2]
+            obj_centers_3d = []
+            for box in boxes:
+                cx_2d = int((box[0] + box[2]) / 2 * pm_w / test_image.shape[1])
+                cy_2d = int((box[1] + box[3]) / 2 * pm_h / test_image.shape[0])
+                cx_2d = min(max(cx_2d, 0), pm_w - 1)
+                cy_2d = min(max(cy_2d, 0), pm_h - 1)
+                obj_centers_3d.append(bg_pm[cy_2d, cx_2d])
+            if obj_centers_3d:
+                obj_means = np.stack(obj_centers_3d, axis=0)  # (N, 3) Y-up
+                bev_semantic = projector.project_semantic_to_bev(
+                    means=obj_means,
+                    semantic_labels=semantic_ids,
+                    opacities=seg_result.get("scores", None),
+                )
+                print(f"  Semantic BEV: {len(label_set)} classes → grid {bev_semantic.shape}")
+        all_metrics["seg_num_classes"] = len(label_set)
+
+    costmap_grid, cost_metrics_obj = cg.generate_costmap(fused_bev, bev_semantic=bev_semantic)
 
     stage_times["costmap"] = round(time.perf_counter() - t0, 4)
 

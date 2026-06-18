@@ -205,6 +205,10 @@ class BEVProjector:
         labs = semantic_labels[mask]
         wgt = opacities[mask] if opacities is not None else np.ones(len(m), dtype=np.float32)
 
+        if len(m) == 0 or len(labs) == 0:
+            h, w_cells = self.grid_shape
+            return np.zeros((h, w_cells), dtype=np.int32)
+
         h, w_cells = self.grid_shape
         x_min, x_max = self._x_range
         y_min, y_max = self._y_range

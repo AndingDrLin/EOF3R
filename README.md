@@ -14,17 +14,18 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 **跨模型几何蒸馏（Cross-Model Geometric Distillation）**：
 
 ```
-训练时：  图像 → VGGT (teacher) → depth/pointmap/rays → 几何监督 ─┐
-         图像 → SAM2/YOLO → 2D masks → 语义监督 ────────────────┤
-                                                                  ▼
-         图像 → MVSplat (student) → 学习预测 occupancy + semantic + confidence
+训练时：  图像 → VGGT-Ω (frozen teacher) → depth/pointmap/rays → 几何监督 ─┐
+         图像 → SAM2/YOLO → 2D masks → 语义监督 ──────────────────────────┤
+                                                                            ▼
+         图像 → ReSplat (student) → 学习预测 occupancy + semantic + free-space
 
-推理时：  图像 → MVSplat → BEV occupancy + semantic costmap（单模型前馈）
+推理时：  图像 → ReSplat → BEV occupancy + semantic costmap（单模型前馈）
 ```
 
-**不是"拼接预训练模型"做串行推理，而是用几何模型（VGGT）教渲染模型（MVSplat）学会预测规划导向的占据表示。**
+**不是"拼接预训练模型"，而是用几何模型教渲染模型学会预测规划导向的占据。**
+**损失函数经概率占据场→负对数似然的严谨推导，非直觉设计。**
 
-**训练目标**：L_depth + L_occ + L_free + L_semantic（主），L_color（辅助, λ=0.1）
+**训练目标**：L_depth (Chamfer) + L_occ (Focal) + L_free (Hinge) + L_semantic（主），L_color（辅助, η=0.1）
 **RGB/photometric 是辅助监督，不是核心目标。**
 
 **车端**：始终独立运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel）
@@ -37,9 +38,10 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 **不是"能避障"**。本地避障（LiDAR + Nav2 obstacle layer）已经可以安全停车和基本绕行。
 
 **技术创新**：
-- **跨模型几何蒸馏**：发现 photorealistic Gaussian primitives 的 opacity 与颜色纠缠→BEV 投影不可用；提出用 VGGT 的几何信号重新训练 MVSplat decoder，解耦占据与外观
-- **Planning-Oriented Gaussian 表征**：occupancy head 替代 opacity、可微 BEV 边缘化保留协方差、free-space carving 引入三值空间分类
-- **训练/推理不对称架构**：VGGT 只在训练时作为几何 teacher，推理时只跑 MVSplat（单模型）
+- **跨模型几何蒸馏**：POC 实验证明 post-hoc MLP 无效（仅 2.6% Gaussians 靠近表面）→ 提出端到端几何蒸馏，VGGT-Ω 为 frozen teacher，ReSplat 为 student
+- **概率占据场损失函数**：从概率模型出发，经严谨数学推导得出 Chamfer+Focal+Hinge 组合损失，非直觉拼凑
+- **自由空间感知**：$\mathcal{L}_{\text{free}}$ 首次在 3DGS 训练中引入 free-space 正则化（独有创新）
+- **训练/推理不对称架构**：VGGT-Ω 仅训练时作为几何 teacher，推理时只跑 ReSplat（单模型）
 
 ---
 
@@ -70,17 +72,14 @@ Efficient Object-level Feedforward 3D Reconstruction with 3DGS — repurposed fo
 ## 当前状态
 
 - [x] Stage 0：项目初始化（目录结构、文档骨架、配置、工具链）
-- [x] 方向调整：从纯 3D 重建扩展为机器人感知系统（2026-05）
 - [x] Stage 1：文献调研完成（12 个方向，24 篇笔记）
 - [ ] Stage 2：数据准备（Re10k 公开数据可用，待录制 campus rosbag）
-- [x] **Phase A：Sequential Baseline** ✅ — E2E 跑通，消融完成。IoU=0.052, cov=1.88%, lethal=55%
-- [ ] **Phase B：MVSplat Decoder Retraining** 🔜 — 跨模型几何蒸馏，VGGT 作 teacher（下一步）
+- [x] **Phase A** ✅：Sequential Baseline — E2E 跑通，消融完成。IoU=0.052, cov=1.88%, lethal=55%
+- [x] **Phase A.1** ✅：Occupancy Head POC — 证明 post-hoc MLP 不够（仅 2.6% Gaussians 靠近表面）
+- [ ] **Phase B** 🔜：ReSplat Decoder Retraining — VGGT-Ω 为 teacher，概率占据场损失，3-stage 训练
 - [ ] Phase C：可微 BEV + Free-Space Carving
-- [ ] Phase D：端到端 Planning Loss
+- [ ] Phase D：端到端 Planning Loss + RL 密度分配
 - [x] 统一环境：`eof3r` conda env (Python 3.10, torch 2.5.1, CUDA 12.1, RTX A6000)
-- [ ] Stage 6：车-云异步架构
-- [ ] Stage 7：实验验证与消融
-- [ ] Stage 8：论文写作与答辩
 
 ---
 

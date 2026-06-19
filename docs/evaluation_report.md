@@ -138,125 +138,41 @@ YOLO→SAM2 在 2D 层面产生了语义标签，但这个信息没有沿着 pip
 
 ---
 
-## 4 论文导向的创新方向
+## 4 Phase A.1: Occupancy Head POC（2026-06-19）
 
-> 核心原则：**不能只是"拼接模型"**。创新必须来自：(a) 新问题定义，(b) 新方法/架构，(c) 新评估范式。
+### 实验设计
 
-### 方向 A：Planning-Oriented Gaussian Representation（核心创新）
+在 Phase A 证明 opacity ≠ occupancy 之后，测试最直接的修复方案：**用 VGGT depth 监督训练一个 post-hoc MLP，将 Gaussian opacity 替换为预测的 occupancy**。
 
-**问题**：现有 3DGS/MVSplat 的目标是逼真渲染，其 Gaussian primitive 针对 photorealistic 优化。
+### 关键结果
 
-**创新**：重新定义 Gaussian primitive 的训练目标：
-- 用 `occupancy_alpha` 替代 `opacity`（显式建模占据概率）
-- 每个 Gaussian 额外输出 `semantic_embedding`、`risk_score`、`confidence`
-- 训练损失：(1-λ)·L_occ + λ·L_rgb，其中 λ∈[0,0.3] 作为辅助
-- BEV 投影时的 occupancy 是从**为占据优化的 alpha**计算，而非渲染用的 opacity
+| 指标 | Opacity | VGGT Labels | MLP Predicted |
+|------|---------|-------------|---------------|
+| BEV cov (>0.3) | 0.11% | 0.006% | 0.09% |
+| 占据 cells (>0.3) | 2,493 | 140 | 2,016 |
+| Density | 0.43 | 0.84 | 0.34 |
 
-**论文卖点**："We repurpose Gaussian Splatting primitives from rendering tools to planning-oriented world representations."
+### 失败分析
 
-### 方向 B：Differentiable BEV Projection with End-to-End Planning Loss
-
-**问题**：当前 BEV 投影是确定性的 numpy 操作，不可微。
-
-**创新**：
-- 用 PyTorch 重写 Gaussian→BEV 投影（高度滤波 + scatter + gaussian_smooth）
-- 使 BEV 占据网格对 Gaussian 参数（means, scales, occupancy_alpha）可微
-- 端到端训练：输入图像 → MVSplat/3DGS → 可微 BEV → planning loss（path smoothness, clearance）
-- 这允许 **planning loss 的梯度反向传播到 Gaussian 参数**
-
-**论文卖点**："First differentiable BEV projection from Gaussian primitives, enabling end-to-end training with planning objectives."
-
-### 方向 C：Cross-Model Geometric Consistency（解决瓶颈 1）
-
-**问题**：VGGT 和 MVSplat 独立训练，输出空间不兼容。
-
-**创新**：
-- 提出 **Geometric Consistency Loss**：对 VGGT pointmap 和 MVSplat Gaussians 的重叠区域施加一致性约束
-- 轻量级 **Coordinate Adapter Network**：一个小 MLP（~100K params）学习 MVSplat 输出到 VGGT 坐标帧的残差变换
-- 训练时 freeze 两个大模型，只训练 adapter + consistency loss
-- 推理时 adapter 作为后处理步骤，不增加推理时间
-
-**论文卖点**："A lightweight adapter that bridges the coordinate gap between independently-trained feedforward models without fine-tuning either."
-
-### 方向 D：Semantic Lifting via 2D→3D Gaussian Association
-
-**问题**：2D 语义（YOLO+SAM2 mask）和 3D 高斯球之间缺乏关联。
-
-**创新**：
-- 利用 MVSplat 的 cost volume 或 depth 信息，将 2D mask "lift" 到 3D
-- 对每个高斯球，通过其投影位置检查是否落在 2D mask 内 → 分配物体 ID + 语义标签
-- 输出 per-Gaussian semantic field → 3D semantic occupancy
-- 这利用了 MVSplat 的内部几何（cost volume 提供的深度约束）
-
-**论文卖点**："Lifting 2D segmentation to 3D Gaussian semantics via feedforward geometry."
-
-### 方向 E：Scale-Agnostic Fusion（解决 VGGT unit-scale）
-
-**问题**：VGGT 输出 unit-scale，需要外部 anchor 才能恢复真实尺度。
-
-**创新**：
-- 不依赖外部尺度 anchor，改用**多模型相互一致性**恢复尺度
-- MVSplat 从 COLMAP 位姿获得 metric scale → 作为 scale anchor
-- VGGT 的 unit-scale 点云通过最小化与 MVSplat 高斯球的 Chamfer distance 来对齐
-- 这是一个 optimization-based scale recovery，不需要 LiDAR/深度/camera height
-- 在 campus 场景：用 wheel odometry 的 metric baseline 验证
-
-**论文卖点**："Scale recovery without depth sensors: mutual consistency between feedforward geometric models."
+- VGGT depth 投影标记：仅 2.6% Gaussians 在 VGGT 表面（±0.3m），68.9% 在自由空间
+- MLP 收敛（val acc 96.5%）但无法提升 BEV——**所有方法 coverage <1%**
+- **根因**：不是 opacity 值的问题，而是 **Gaussian 位置本身不对**（MVSplat decoder 为渲染优化，非几何准确）
+- **结论**：post-hoc MLP 路线不可行 → Phase B 必须端到端重训 decoder + Gaussian adapter，几何 loss 反向传播至 μ, Σ
 
 ---
 
-## 5 推荐优先级
+## 5 后续方向：Phase B 统一方案
 
-| 优先级 | 方向 | 创新性 | 工作量 | 依赖 |
-|--------|------|--------|--------|------|
-| **P0** | A: Planning-Oriented Gaussians | ⭐⭐⭐⭐⭐ | 高（需训练） | MVSplat 训练代码 |
-| **P1** | B: Differentiable BEV | ⭐⭐⭐⭐⭐ | 中 | A 完成 |
-| **P1** | E: Scale-Agnostic Fusion | ⭐⭐⭐⭐ | 中 | 坐标系已解决 |
-| **P2** | D: Semantic Lifting | ⭐⭐⭐ | 低 | 当前架构就绪 |
-| **P3** | C: Cross-Model Consistency | ⭐⭐⭐ | 高（需训练） | A 完成 |
+> 详见 `docs/lit_notes/phaseb_design_2026-06-19.md`
 
-### 推荐最低创新组合（毕设可行）
+所有五个旧方向（A/B/C/D/E）已统一为 **跨模型几何蒸馏** 单框架：
 
-**A（轻量版）+ D + E**：
+| 旧方向 | 在新框架中的对应 |
+|--------|----------------|
+| A: Occ Head | $\mathcal{L}_{\text{occ}}$ (Focal Loss) + 端到端重训 Gaussian positions |
+| B: Diff BEV | Phase C：可微 BEV 边缘化 + CUDA kernel |
+| C: Cross-Model Consistency | $L_{\text{depth}}$ (Chamfer) 直接对齐 Gaussian 与 VGGT |
+| D: Semantic Lifting | $\mathcal{L}_{\text{sem}}$ + per-Gaussian identity encoding |
+| E: Scale Recovery | VGGT-Ω 的 metric-scale 预训练（待验证） |
 
-1. **A 轻量版**：不重新训练 MVSplat，而是添加一个 light-weight occupancy head（~50K params），在冻结的 MVSplat backbone 上用 planning loss 微调。3-5 天训练。
-2. **D**：2D mask → 3D Gaussian 关联。利用 MVSplat 的 cost volume depth 做 lifting。代码量 ~200 行。
-3. **E**：多模型 scale recovery。利用 MVSplat metric pose 和 VGGT unit-scale 的相互一致性优化 scale。代码量 ~300 行。
-
-**三个方向共同构成论文 core contribution**：
-> "We propose a planning-oriented 3D scene representation that (A) repurposes Gaussian primitives for occupancy prediction, (D) lifts 2D semantic segmentation to 3D via feedforward geometry, and (E) recovers metric scale without depth sensors through cross-model consistency."
-
----
-
-## 6 当前 Pipeline 的诚实评估
-
-### 能做什么
-
-- ✅ 端到端从 RGB 图像生成 BEV 占据 + semantic costmap（架构完整）
-- ✅ 3 个预训练模型（SAM2, VGGT, MVSplat）在同一 pipeline 中协作
-- ✅ 坐标帧对齐 + 尺度恢复使 FG/BG 在同一空间中（冲突率 75%→0% 验证）
-- ✅ YOLO+SAM2 提供真实语义标签（3 类 COCO 物体 vs 69 碎片）
-- ✅ Costmap 输出合理分布（55% lethal, 42% free）
-
-### 不能做什么
-
-- ❌ 精确的 metric-scale 占据（scale recovery 是近似的）
-- ❌ 高质量的 FG/BG overlap（IoU=0.05，两套表征粒度不匹配）
-- ❌ per-Gaussian 语义（语义只在 2D bbox 层面）
-- ❌ 实时推理（22s total，主要是 VGGT 13s）
-
-### 论文中应诚实讨论的局限性
-
-1. Scale recovery without depth sensors is approximate（需要 LiDAR/depth 才能精确）
-2. Feedforward models trained independently produce spatially incompatible outputs（需要 adapter）
-3. Gaussian opacity ≠ occupancy（需要专门的 occupancy head）
-4. 2D→3D semantic association is lossy（需要 lifting 机制）
-
----
-
-## 7 下一步行动
-
-1. **立即**：实现方向 D（Semantic Lifting）——代码量小，立即可验证
-2. **短期**：实现方向 E（Scale-Agnostic Fusion）——不依赖训练，纯优化
-3. **中期**：实现方向 A 轻量版（Planning-Oriented Gaussians）——需要 GPU 训练
-4. **长期**：方向 B（Differentiable BEV）——A 完成后自然延伸
+**核心区别**：旧方案是"轻量级 patch"，Phase B 是**系统性的端到端几何蒸馏**——损失函数经概率模型严谨推导，训练策略分三阶段。

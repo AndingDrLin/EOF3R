@@ -8,18 +8,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **EOF3R** — Efficient Object-level Feedforward 3D Reconstruction with 3DGS.
 
-**核心创新**：将 feedforward 3DGS 从 photorealistic 渲染工具改造为 planning-oriented 几何-语义占据预测器。不是"拼接预训练模型"，而是**跨模型几何蒸馏（cross-model geometric distillation）**——用一个前馈几何模型（VGGT）的输出作为另一个前馈渲染模型（MVSplat）的训练监督信号，使后者学会预测 metric-scale 占据而非逼真颜色。
+**核心创新**：将 feedforward 3DGS 从 photorealistic 渲染工具改造为 planning-oriented 几何-语义占据预测器。方法是**跨模型几何蒸馏（cross-model geometric distillation）**——用前馈几何模型（VGGT-Ω）的输出作为前馈 3DGS 模型（ReSplat）的训练监督信号，通过概率占据场建模→负对数似然→可计算损失函数的严谨推导，使 3DGS 学会预测 metric-scale 占据而非逼真颜色。
 
 **Despite the name, the project produces planning-oriented Gaussian occupancy, not photorealistic images.**
 
 本科毕业设计原型系统。面向 Husky 低速无人车在校园/园区的"最后 50 米"配送场景。
 
 **方法本质**：
-- **训练时**：VGGT 提供 depth、free-space ray、pointmap 作为几何监督 → MVSplat 学习用 Gaussian primitives 预测 occupancy + semantic + confidence（而非 opacity + SH + color）
-- **推理时**：只需要 MVSplat（单模型，前馈）→ 直接从 RGB 输出 metric-scale BEV 占据 + 语义 costmap
-- VGGT 是"几何老师"，不是"pipeline 阶段"——这是与"拼接方案"的本质区别
+- **训练时**：VGGT-Ω 提供 depth + pointmap + free-space rays → 几何监督；YOLO+SAM2 提供 2D masks → 语义监督。ReSplat 学习用 Gaussian primitives 预测 occupancy + semantic + confidence + free-space（而非 opacity + SH + color）
+- **推理时**：只需要 ReSplat（单模型，前馈）→ 直接从 RGB 输出 metric-scale BEV 占据 + 语义 costmap
+- VGGT-Ω 是 frozen geometry teacher，不是 inference stage——与"拼接方案"的本质区别
+- 2026-06-19 Occupancy Head POC 实验证明：post-hoc MLP 在现有 Gaussians 上无效（仅 2.6% 靠近真实表面），必须端到端重训 decoder + Gaussian positions
 
-**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端运行改造后的 MVSplat（单模型前馈推理）。SAM2/YOLO 提供 2D mask 监督（训练时），VGGT 提供几何监督（训练时）。推理时只跑 MVSplat + 轻量分割，输出 BEV occupancy + semantic costmap。
+**系统架构**：车端始终运行本地安全回路（相机/里程计/IMU/急停/Nav2 局部规划/cmd_vel），云端运行改造后的 ReSplat（单模型前馈推理）。推理时只跑 ReSplat，输出 BEV occupancy + semantic costmap。总延迟目标 <10s（VGGT-Ω ~5s + ReSplat ~2s + BEV ~0.01s）。
 
 **系统不追求逼真重建，而追求更可靠、更适合规划的几何-语义表示。**
 
@@ -41,20 +42,25 @@ This file itself is in Chinese for §1 and English for code-facing sections — 
 ## §1b Development Commands
 
 ```bash
-# End-to-end pipeline test (SAM2 + VGGT + MVSplat, all real models)
-conda activate eof3r
+# === Verification (Phase A — confirmed working) ===
+# E2E pipeline test (all real models): 21.4s, coverage 1.88%, IoU 0.0047
+source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r
 python eof3r/scripts/eval/test_e2e_pipeline.py
-# Outputs: outputs/eval/e2e_metrics.json + e2e_pipeline_visualization.png
 
-# BEV projection verification (MVSplat only, auto-resolves MVSplat root)
-conda activate eof3r
+# Ablation study (4 variants × 3 frame pairs)
+python eof3r/scripts/eval/ablation_study.py
+
+# Occupancy Head POC (post-hoc MLP experiment — Phase A.1)
+python eof3r/scripts/eval/test_occupancy_head.py
+
+# BEV projection verification
 python eof3r/scripts/eval/verify_mvsplat_bev.py
 
-# Lint & format (auto-fix)
+# === Code quality ===
 ruff check --fix eof3r/src/ eof3r/scripts/ --config eof3r/pyproject.toml
 ruff format eof3r/src/ eof3r/scripts/ --config eof3r/pyproject.toml
 
-# Setup a baseline
+# === Setup ===
 bash eof3r/scripts/setup_mvsplat.sh
 ```
 
@@ -80,11 +86,13 @@ pip install -r eof3r/requirements.txt
 ### Known Blockers (updated 2026-06-19)
 
 - ~~环境搭建、模型安装、数据准备~~ → **全部 Resolved。**
-- **当前核心 Blocker**：MVSplat 输出的是 photorealistic Gaussian primitives（opacity 与颜色纠缠、scale 无物理约束、缺失自由空间建模）→ BEV 投影不可用。
-  - 2026-06-19 消融验证：FG/BG IoU=0.052（固定 grid 下 coverage 1.88%），lethal=55%，drivable conflict=75%。三个机制性失败确认（opacity≠occupancy, covariance loss, no free-space）。
-  - 解决方向：用 VGGT 的几何信号重新训练 MVSplat 的 decoder head（见 §1c 和 `docs/current_issues.md`）。
+- 🔴 **核心 Blocker**：MVSplat/ReSplat 的 Gaussian primitives 为 photorealistic 渲染优化→BEV 不可用。三个机制性失败（见 §1c）：
+  1. **Opacity≠Occupancy**：α 是 alpha-blending 渲染权重，非占据概率。POC 实验证明仅 2.6% Gaussians 靠近 VGGT 表面，68.9% 在自由空间。
+  2. **Covariance Loss**：scatter+smooth BEV 投影丢弃 Σ 结构→各向同性过膨胀。
+  3. **No Free-Space**：VGGT pointmap 只给表面点→无法区分 free/occ/unknown。
+  - 解决方向：概率占据场建模→VGGT-Ω 几何监督→端到端重训 ReSplat decoder（见 §1c）。
 - **次要 Blocker**：无校园 rosbag。公开数据集 Re10k 作为验证替代。
-- **Conda 注意事项**：非交互 shell（CI/脚本）需 `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`。交互终端开箱即用。
+- **Conda 注意事项**：非交互 shell 需 `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`。交互终端开箱即用。
 
 ### Config-driven Experiments
 
@@ -94,71 +102,71 @@ All experiments are driven by YAML configs inheriting from `eof3r/configs/defaul
 
 ## §1c Architecture: Cross-Model Geometric Distillation
 
-### The Fundamental Insight
+### Three Mechanistic Failures (Confirmed by Phase A + POC)
 
-Prior work concatenates feedforward models as sequential inference stages (SAM2→VGGT→MVSplat→fusion).  This suffers from three mechanistic failures when projecting Gaussian primitives to BEV:
+| # | Failure | Mechanism | Quantitative Evidence (2026-06-19) |
+|---|---------|-----------|-----------------------------------|
+| 1 | **Opacity ≠ Occupancy** | α is alpha-blending weight entangled with color. Low α+high SH = same pixel as high α+low SH. | α_mean=0.28, pass_rate(>0.5)=2.5%, POC: 2.6% Gaussians near surface, 68.9% in free space |
+| 2 | **Covariance Loss** | BEV scatter+smooth discards Σ→anisotropic→isotropic inflation by `3·max(scale)` | Fixed-grid coverage=1.88%, dynamic-grid=85.5% (self-adaptive artifact) |
+| 3 | **No Free-Space** | VGGT pointmap surfaces all→occupied. No FREE/OCCUPIED/UNKNOWN distinction | Costmap lethal=55%, free=42%, cannot distinguish free from unknown |
 
-1. **Opacity-Occupancy Mismatch**: MVSplat's opacity is optimised for alpha-blending with colour — low α + high SH can produce the same pixel as high α + low SH.  Opacity is a *rendering weight*, not an *occupation probability*.  Treating it as occupancy is a category error.
-
-2. **Covariance Information Loss**: Scatter+smooth BEV projection discards the full 3×3 covariance Σ of each Gaussian.  An anisotropic Gaussian (e.g., 10cm-wide chair leg, 1m tall) gets isotropically inflated to `3·max(scale)` in BEV.
-
-3. **Missing Free-Space Modelling**: VGGT pointmap gives surface points, but ray-based free-space carving (camera→surface = FREE, surface vicinity = OCCUPIED, behind surface = UNKNOWN) is never performed.  The costmap cannot distinguish free from unknown.
-
-These failures are NOT fixable by tuning — they stem from a category mismatch: **photorealistic primitives ≠ planning-oriented primitives**.
-
-### The Approach: VGGT as Teacher, MVSplat as Student
+### Architecture: VGGT-Ω as Teacher, ReSplat as Student
 
 ```
-                     TRAINING                          │            INFERENCE
-                                                       │
-  ┌──────┐    ┌──────┐                                 │   ┌──────┐
-  │ SAM2 │    │ VGGT │  ← both provide SUPERVISION     │   │ RGB  │
-  └──┬───┘    └──┬───┘                                 │   └──┬───┘
-     │2D masks   │depth, pointmap, free-space rays     │      │
-     │           │                                      │      ▼
-     ▼           ▼                                      │   ┌──────────┐
-  ┌──────────────────────────────┐                      │   │  MVSplat │
-  │         MVSplat              │  ← train decoder     │   │ (infer)  │
-  │  freeze: encoder (cost vol) │    heads with         │   └───┬──────┘
-  │  retrain: occupancy head    │    geometric loss     │       │
-  │           semantic head     │                       │       ▼
-  │           confidence head   │                       │   ┌──────────┐
-  └──────────────────────────────┘                      │   │   BEV    │
-                                                        │   │occupancy │
-  L_total = L_depth + L_occ + L_free + L_semantic       │   │+semantic │
-            + λ·L_color  (λ=0.1, auxiliary only)        │   │+costmap  │
-                                                        │   └──────────┘
+                    TRAINING                              │        INFERENCE
+                                                          │
+  ┌──────┐    ┌─────────┐                                │   ┌──────┐
+  │ SAM2 │    │ VGGT-Ω  │  ← frozen teachers             │   │ RGB  │
+  └──┬───┘    └────┬────┘                                │   └──┬───┘
+     │2D masks     │depth, pointmap, free-space rays     │      │
+     │             │                                      │      ▼
+     ▼             ▼                                      │   ┌──────────┐
+  ┌────────────────────────────────┐                      │   │ ReSplat  │
+  │          ReSplat               │  ← train: decoder    │   │ (infer)  │
+  │  freeze: encoder               │    + Gaussian adapter│   └───┬──────┘
+  │  train:  occupancy head        │    + occupancy head  │       │
+  │          semantic head         │    + semantic head   │       ▼
+  │          Gaussian positions    │                      │   ┌──────────┐
+  └────────────────────────────────┘                      │   │   BEV    │
+                                                          │   │occupancy │
+  L_total = α·L_depth + β·L_occ + γ·L_free + δ·L_sem     │   │+semantic │
+            + η·L_color  (η=0.1, auxiliary)               │   │+costmap  │
+                                                          │   └──────────┘
 ```
 
-**VGGT is a training-time geometry teacher, not an inference-time pipeline stage.**  At inference, only MVSplat runs — a single feedforward model directly predicting planning-oriented occupancy from RGB.
+### Loss Function (Probabilistic Derivation — see `docs/lit_notes/phaseb_design_2026-06-19.md` §2)
 
-### Three Principled Interventions
+Each Gaussian defines an occupancy field: $p_i(\mathbf{x}) = o_i \cdot \mathcal{N}(\mathbf{x}; \boldsymbol{\mu}_i, \boldsymbol{\Sigma}_i)$
 
-| # | Failure Mode | Intervention | Supervision |
-|---|-------------|-------------|-------------|
-| 1 | Opacity ≠ Occupancy | Replace opacity head with **occupancy head** (sigmoid output, 0=free, 1=occupied) | VGGT depth → silhouette loss (binary: is there a surface at this depth?) |
-| 2 | Covariance discarded | **Differentiable BEV marginalization** — analytically project Σ to XZ plane, preserving anisotropy | VGGT pointmap density → constrain scale to physically plausible range |
-| 3 | No free-space model | **Ray-based carving** — for each VGGT ray, label space BEFORE surface as FREE, AT surface as OCCUPIED, BEHIND as UNKNOWN | VGGT depth rays + pointmap |
+VGGT-Ω provides per-pixel depth $D^{\text{vggt}}$ and pointmap $\mathcal{P}^{\text{vggt}}$.  Per-Gaussian labeling via projection to VGGT camera:
 
-### Current Code Status (as of 2026-06-19)
+$$\Delta d_i = \tilde{\mu}_i^z - D^{\text{vggt}}(\pi(\tilde{\boldsymbol{\mu}}_i)), \quad \sigma_i = \kappa \cdot \max\text{eig}(\boldsymbol{\Sigma}_i)$$
 
-The `eof3r/src/` modules currently implement the **sequential concatenation baseline** (for ablation comparison):
+$$y_i = \begin{cases} 1 & |\Delta d_i| \leq \sigma_i \text{ (OCCUPIED)} \\ 0 & \Delta d_i < -\sigma_i \text{ (FREE)} \\ \text{mask} & \Delta d_i > \sigma_i \text{ (UNKNOWN)} \end{cases}$$
 
-| Module | File | Purpose (Baseline) | Purpose (Target) |
-|--------|------|--------------------|--------------------|
-| segmentation | `sam2_wrapper.py` | Inference-stage segmentation → masks | Training supervision: 2D masks for semantic loss |
-| foreground | `mvsplat_wrapper.py` | Inference-stage feedforward Gaussians | **Unified inference model** (occupancy+semantic+confidence) |
-| background | `vggt_wrapper.py` | Inference-stage geometry estimation | **Training supervision**: depth, pointmap, free-space rays |
-| fusion | `bev_projector.py`, `coord_utils.py` | numpy BEV projection | → Replace with differentiable BEV marginalization |
-| costmap | `costmap_generator.py` | Post-processing costmap | Train-time planning loss |
-| communication | `__init__.py` only | 🔴 Empty stub | Vehicle↔cloud bridge |
+| Loss | Formula | Purpose |
+|------|---------|---------|
+| $\mathcal{L}_{\text{depth}}$ | $\frac{1}{\|\mathcal{P}\|}\sum_{\mathbf{p}}\min_i\|\boldsymbol{\mu}_i-\mathbf{p}\|^2 + \frac{1}{\|\mathcal{O}\|}\sum_{i\in\mathcal{O}}\min_{\mathbf{p}}\|\boldsymbol{\mu}_i-\mathbf{p}\|^2$ | Chamfer: Gaussian means ↔ VGGT surfaces |
+| $\mathcal{L}_{\text{occ}}$ | $-\frac{1}{\|\mathcal{L}\|}\sum_i [w_1 y_i(1-o_i)^\gamma\log o_i + w_0(1-y_i)o_i^\gamma\log(1-o_i)]$ | Focal Loss ($\gamma=2$): occupy/free classification |
+| $\mathcal{L}_{\text{free}}$ | $\frac{1}{\|\mathcal{F}\|}\sum_{i\in\mathcal{F}}\max(0, o_i-\epsilon)^2, \epsilon=0.05$ | Squared hinge: free-space Gaussians → low occupancy |
+| $\mathcal{L}_{\text{sem}}$ | $-\frac{1}{\|\mathcal{O}\|}\sum_{i\in\mathcal{O}}\log\text{softmax}(\mathbf{s}_i)_{c_i}$ | Per-Gaussian semantic classification |
+| $\mathcal{L}_{\text{color}}$ | $\eta\cdot\frac{1}{HW}\sum[|I_{\text{rend}}-I_{\text{gt}}|_1 + 0.2(1-\text{SSIM})]$ | Auxiliary only ($\eta=0.1$): prevent encoder drift |
+
+### Three-Stage Training Schedule
+
+```
+Stage 1 (Warmup, ~30%):  α=1.0 β=0.3 γ=0.1 δ=0   η=0.3  → Gaussians move to surfaces
+Stage 2 (Main, ~50%):    α=0.5 β=1.0 γ=0.5 δ=0.3 η=0.1  → occ + free-space + semantics
+Stage 3 (Fine, ~20%):    α=0.3 β=1.0 γ=1.0 δ=0.5 η=0.05 → refine, color exits
+```
 
 ### Implementation Roadmap
 
-- **Phase A** ✅ (verified 2026-06-19): Sequential baseline — all three models as inference stages, quantitatively confirming the three mechanistic failure modes. FG/BG IoU=0.052, coverage(t=0.3)=1.88%, lethal=55%, drivable conflict=75%.  Ablation: 4 variants × 3 frame pairs.
-- **Phase B** (next): MVSplat decoder retraining — add occupancy/semantic/confidence heads, freeze encoder, train with VGGT geometric supervision.
-- **Phase C**: Differentiable BEV marginalization + ray-based free-space carving — replace numpy projection with torch operations.
-- **Phase D**: End-to-end training with planning loss — backpropagate from costmap quality metrics to Gaussian parameters.
+- **Phase A** ✅ (2026-06-19): Sequential baseline + 4-variant ablation. Confirmed 3 failure modes. IoU=0.052, cov=1.88%, lethal=55%.
+- **Phase A.1** ✅ (2026-06-19): Occupancy Head POC. Proved post-hoc MLP insufficient — only 2.6% Gaussians near VGGT surfaces. Must retrain Gaussian positions end-to-end.
+- **Phase B** 🔜: ReSplat decoder retraining with VGGT-Ω geometric supervision. Replace MVSplat wrapper with ReSplat; add occupancy/semantic heads; implement $\mathcal{L}_{\text{depth}} + \mathcal{L}_{\text{occ}} + \mathcal{L}_{\text{free}}$; 3-stage training on Re10k.
+- **Phase C**: Differentiable BEV marginalization — analytical Σ→XZ projection; ray-based free-space carving.
+- **Phase D**: End-to-end planning loss; RL-based adaptive Gaussian density allocation.
 
 ---
 
@@ -241,13 +249,16 @@ External open-source code (3DGS, VGGT, SAM2, DUSt3R) lives under `baselines/`.
 
 | Baseline | Status | Notes |
 |----------|--------|-------|
-| MVSplat | 🟢 Cloned + checkpoints | re10k.ckpt, acid.ckpt. 131K Gaussians, ~3.6s inference |
-| DepthSplat | 🟢 Cloned | Not yet used |
-| SAM2 | 🟢 Cloned + verified | HuggingFace auto-download. YOLOv8-nano frontend → 3 objects with real COCO labels (vs 65-76 fragments in auto mode) |
-| VGGT | 🟢 Cloned + verified | HuggingFace auto-download, 1B model, ~13.6s inference. Scale recovery ×7.8 via ground plane |
+| MVSplat | 🟢 Phase A verified | re10k.ckpt, 131K Gaussians, α_mean=0.28. Phase B targets replacement with ReSplat |
+| DepthSplat | 🟢 Cloned | MVSplat successor. DepthAnythingV2 fusion. Backup student model |
+| ReSplat | ⬜ Research | Preferred Phase B student (16× fewer Gaussians, recurrent refinement). Not yet cloned |
+| CoSplat | ⬜ Research | Backup student (tri-plane consensus, best geometric consistency) |
+| SAM2 | 🟢 Verified | YOLOv8-nano frontend → 3 objects with real COCO labels |
+| VGGT | 🟢 Phase A verified | 1B model, ~13.6s. Scale recovery ×7.8 via ground plane |
+| VGGT-Ω | ⬜ Research | CVPR 2026 Oral. Depth δ1.25=93.5% (+26% vs VGGT), 1.6× faster. Phase B teacher |
+| YOLOv8 | 🟢 Integrated | ultralytics pip, 6MB nano model |
 | DUSt3R, MASt3R | ⬜ Not started | — |
-| Nav2 | ⬜ Not started | Installed via apt on Husky only |
-| YOLOv8 | 🟢 Integrated | ultralytics pip package, 6MB nano model, lazy-loaded |
+| Nav2 | ⬜ Not started | Husky only |
 
 When cloning is blocked, create a stub class (e.g., `SAM2Stub`) with the same API as the planned wrapper, generating synthetic data so downstream modules can be tested. Document the planned real API in the stub's docstring.
 
@@ -583,54 +594,32 @@ export https_proxy=http://192.168.213.103:53941
 - **MVSplat requires moviepy==1.0.3** (2.x API is incompatible).
 
 ### Key Design Decisions
-- Subprocess approach was rejected for MVSplat; path isolation inside build() is cleaner.
-- Vectorized fusion (scatter+gaussian_smooth) chosen over per-point loop (650x speedup).
+- Subprocess approach rejected for MVSplat; path isolation inside build() is cleaner.
+- Vectorized fusion (scatter+gaussian_smooth) over per-point loop (650x speedup).
 - Stubs kept alongside real wrappers for CI/testing without GPU.
-- YOLOv8-nano (6MB) → SAM2 box-prompt chosen over SAM2 automatic mode (65→3 objects, real COCO semantics, 2.5× speedup).
-- Dynamic BEV grid (auto bounds) via `set_bounds_from_points()` — prevents shape mismatch between FG and BG projections.
-
-### Verified Pipeline State (2026-06-19)
-
-**E2E Pipeline Test** (`test_e2e_pipeline.py`) — all 5 stages pass with real models:
-
-| Stage | Module | Output | Time |
-|-------|--------|--------|------|
-| Segmentation | YOLOv8 + SAM2 | 3 objects (couch, chair, chair), COCO labels | 4.2s |
-| Background | VGGT (1B) | Pointmap (2×280×504×3), poses, scale ×7.8 | 13.6s |
-| Foreground | MVSplat | 131K Gaussians, α_mean=0.28, pass_rate=2.5% | 3.6s |
-| Fusion | BEV Projector | Fixed grid (400×227), coverage 1.88% | 0.03s |
-| Costmap | Nav2 format | 78.9K lethal, 74.8K free, completeness=1.0 | 0.02s |
-| **Total** | | | **21.4s** |
-
-**Ablation Study** (`ablation_study.py`) — 4 variants × 3 frame pairs:
-
-| Variant | BEVcov | IoU | Conflict | Free% | Lethal% | Obj | Sem | Scale |
-|---------|--------|-----|----------|-------|---------|-----|-----|-------|
-| A_full | 0.855 | 0.052 | 0.754 | 41.7% | 55.0% | 3 | Y | 7.8 |
-| B_noscale | 0.543 | 0.000 | 0.000 | 61.6% | 34.5% | 3 | Y | 7018 |
-| C_noalign | 0.817 | 0.000 | 0.000 | 47.9% | 48.9% | 3 | Y | 7.8 |
-| D_auto | 0.855 | 0.052 | 0.754 | 41.7% | 55.0% | 69 | N | 7.8 |
-
-> **Note**: BEVcov uses dynamic BEV grid — 85.5% is a self-adaptive artifact. Fixed grid coverage is 1.88%. See `evaluation_report.md` §2.4.
-
-**Key Findings**:
-- Scale recovery (A vs B): IoU 0→0.052, scale 7018→7.8 — scale is necessary but not sufficient
-- Coord alignment (A vs C): Conflict 0→75% — proves FG objects sit on drivable BG (physically correct)
-- YOLO frontend (A vs D): 69→3 objects, real semantics, 2.5× faster
-- **Fundamental limit**: IoU=0.052 is bottlenecked by opacity≠occupancy + covariance loss, not by alignment/scale
+- YOLOv8-nano (6MB) → SAM2 box-prompt (65→3 objects, real COCO semantics, 2.5× speedup).
+- Dynamic BEV grid (auto bounds) via `set_bounds_from_points()` — prevents shape mismatch.
+- **Phase B design (2026-06-19)**: VGGT-Ω teacher + ReSplat student (16× fewer Gaussians), probabilistic occupancy-field loss derivation, 3-stage training, RL for Gaussian density allocation, PBT for hyperparams.
 
 ### Conda in Non-Interactive Shells
-- The Bash tool creates non-interactive shells → `.bashrc` guard (`case $- in *i*)`) returns early
-- Workaround for scripts: `source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`
-- Interactive terminals work correctly (`.bashrc` conda init block is in place)
+- Non-interactive shells skip `.bashrc` → use `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`
 
-### Phase B POC Results (2026-06-19)
-**Occupancy Head experiment** (`test_occupancy_head.py`):
-- Post-hoc MLP occupancy head on existing MVSplat Gaussians does NOT improve BEV
-- Root cause: only 2.6% of MVSplat Gaussians are near VGGT surfaces (at 0.3m depth tolerance)
-- 68.9% are in free space, 28.5% behind surfaces — Gaussian positions are rendering-optimized, not geometry-accurate
-- **Conclusion**: Phase B requires joint retraining of Gaussian positions + occupancy head, not a post-hoc classifier
-- VGGT depth projection labeling is a viable supervision strategy (71.5% of Gaussians labelable as occ/free)
+### Phase A Verified Results (2026-06-19)
+- **E2E**: 21.4s total, 131K Gaussians, α_mean=0.28, fixed-grid coverage=1.88%
+- **Ablation** (4×3): A_full IoU=0.052, scale=7.8; B_noscale IoU=0, scale=7018; C_noalign IoU=0; D_auto 69 objects
+- **Conclusion**: Scale+alignment necessary but insufficient. Three failure modes bottleneck BEV.
+
+### Phase A.1 POC (2026-06-19)
+- Post-hoc MLP occupancy head: VGGT depth projection→per-Gaussian labels (2.6% occ, 68.9% free, 28.5% unknown)
+- MLP val acc=96.5% but BEV coverage <1% for all methods (opacity/VGGT labels/MLP)
+- **Proved**: Gaussian positions are the problem, not opacity prediction. Must retrain decoder end-to-end.
+
+### Phase B Design (see `docs/lit_notes/phaseb_design_2026-06-19.md` for full derivation)
+- **Teacher**: VGGT-Ω (CVPR 2026 Oral, depth δ1.25=93.5%, 1.6× faster than VGGT). Frozen, offline pre-computed.
+- **Student**: ReSplat (16× fewer Gaussians, recurrent refinement) preferred; CoSplat (tri-plane consensus) backup.
+- **Loss**: Probabilistic occupancy field→NLL→Chamfer+Focal+Hinge+CE+L1. 3-stage training schedule.
+- **Hyperparams**: Optuna (initial)→PBT (adaptive)→BO (fine). RL for per-region Gaussian density allocation.
+- **Inference target**: <10s total (VGGT-Ω ~5s + ReSplat ~2s + BEV ~0.01s)
 
 ---
 

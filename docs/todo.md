@@ -94,31 +94,32 @@
 
 **Baseline 结论**：fused grid: FG/BG IoU=0.052, BEV coverage 1.88%（动态 grid 的 85.5% 是压缩 grid 范围的假象），costmap 55% lethal, 75% drivable conflict。三个机制性失败阻止 BEV 可用——见 `docs/current_issues.md`。
 
-### Phase B：MVSplat Decoder Head Retraining（当前）
-- [x] **Occupancy Head POC 实验** (2026-06-19) — 证明 post-hoc MLP 不够
-  - VGGT depth 投影→ per-Gaussian label (occ 2.6%, free 68.9%, unknown 28.5%, 71.5% trainable)
-  - MLP 训练收敛 (val acc 96.5%) 但无法提升 BEV (coverage 全部 <1%)
-  - **根因**: MVSplat Gaussian 位置本身不对（为渲染优化，非几何准确）→ 仅 2.6% 靠近 VGGT 表面
-  - **结论**: 需要 decoder 端到端重训练，几何 loss 需反向传播到 Gaussian means（不能 post-hoc label）
-- [ ] 在 MVSplat Gaussian adapter 内添加 occupancy head（联合 means/scales/opacity 一起训练）
-- [ ] 添加 semantic head（per-Gaussian class logits）
-- [ ] 添加 confidence head（epistemic uncertainty）
-- [ ] 训练损失：L_depth(VGGT) + L_occ + L_semantic(SAM2) + λ·L_color
-- [ ] Freeze MVSplat encoder（cost volume），训练 decoder head + Gaussian adapter
-- [ ] 训练数据：Re10k 场景 → (图像, VGGT 几何监督) 对
-- [ ] 验证：对比 baseline opacity vs retrained occupancy 的 BEV 质量
+### Phase B：ReSplat Decoder Retraining（当前）🔜
+
+> 完整设计见 `docs/lit_notes/phaseb_design_2026-06-19.md`
+
+- [x] **Phase A.1 POC** (2026-06-19): post-hoc MLP 无效 → 确认端到端重训必要性
+- [x] 损失函数严谨数学推导（概率占据场→NLL→Chamfer+Focal+Hinge+CE+L1）
+- [x] 后端选型分析：首选 ReSplat (16× fewer Gaussians)，备选 CoSplat
+- [x] Teacher 选型：VGGT-Ω (CVPR 2026 Oral, depth δ1.25=93.5%)
+- [x] 超参优化策略：Optuna → PBT → BO；RL 用于高斯密度分配
+- [ ] 获取 ReSplat 代码 + VGGT-Ω checkpoint
+- [ ] 实现 ReSplat wrapper（替换 MVSplat wrapper）
+- [ ] 实现 occupancy head + semantic head（在 Gaussian adapter 内）
+- [ ] 实现 $\mathcal{L}_{\text{depth}} + \mathcal{L}_{\text{occ}} + \mathcal{L}_{\text{free}}$ 
+- [ ] 离线预计算 VGGT-Ω 监督（深度+位姿→训练 dataloader）
+- [ ] 三阶段训练（Warmup→Main→Fine-tune）on Re10k
+- [ ] 验证：对比 baseline opacity vs retrained occupancy BEV 质量
 
 ### Phase C：可微 BEV + Free-Space Carving
-- [ ] 将 numpy BEV 投影替换为 torch 可微操作
-- [ ] 解析 Σ→XZ 投影（保留协方差结构，消除各向同性过膨胀）
-- [ ] VGGT 光线 free-space carving（FREE/OCCUPIED/UNKNOWN 三值）
-- [ ] 验证：对比 baseline scatter+smooth vs 可微 marginalization
+- [ ] 将 numpy BEV 替换为 torch 可微操作
+- [ ] 解析 Σ→XZ 投影（保留协方差结构）
+- [ ] BEV CUDA kernel 加速
 
 ### Phase D：端到端 Planning Loss
 - [ ] costmap 质量指标作为可微损失
-- [ ] Backprop 到 Gaussian 参数
-- [ ] 三消融实验完整报告（论文核心结果）
-- [ ] 坐标系统验证（VGGT 输出帧 → Y-up → Z-up 转换确认）
+- [ ] RL 自适应高斯密度分配（RLD-GS 风格）
+- [ ] 三消融论文核心结果
 
 ---
 

@@ -1,26 +1,22 @@
 # 当前问题与解决方案
 
 > 更新时间：2026-06-19
-> 所有真模型（SAM2+VGGT+MVSplat）已在统一 eof3r env 中 E2E 验证通过。
-> **定位转变**：从"拼接预训练模型"转向"跨模型几何蒸馏"——VGGT 是训练时的 teacher，MVSplat 是推理时唯一的模型。
+> Phase A 消融 + Phase A.1 POC 均已完成。方向确认：**跨模型几何蒸馏**——VGGT-Ω 为 teacher，ReSplat 为 student。
+> 损失函数已完成严谨数学推导（`docs/lit_notes/phaseb_design_2026-06-19.md` §2）。
 
 ---
 
-## 三个机制性失败模式（根本原因，不是调参能解决的）
+## 三个机制性失败模式 + POC 定量证据
 
 ### 🔴 失败模式 1：Opacity ≠ Occupancy
 
-**现象**：`opacity_mean=0.28, pass_rate(α>0.5)=2.5%`，但 BEV 中每个 α 值都没有物理含义。
+**POC 实验定量证据**（`test_occupancy_head.py`, 2026-06-19）：
+- VGGT depth 投影标记：2.6% occupied, 68.9% free, 28.5% unknown
+- Post-hoc MLP val acc=96.5% 但 BEV coverage<1%（所有方法）
+- **根因升级**：不仅是 opacity 值的问题——**Gaussian 位置本身就不对**（仅 2.6% 靠近 VGGT 表面，为渲染优化而非几何准确）
+- **结论**：必须端到端重训 decoder + Gaussian adapter，几何 loss 反传至 μ, Σ
 
-**机制**：MVSplat 用 3DGS 的 alpha-blending 渲染方程优化 opacity：
-```
-C_pixel = Σ α_i · c_i · Π(1-α_j)
-```
-α 和 SH 颜色 c 是**联合优化**的——低 α + 高 c 与 高 α + 低 c 可以产生相同像素。优化器只关心渲染颜色，不关心 α 是否有物理意义。一个 α=0.28 的高斯球可以是场景表面的主要贡献者（因为它是光线首先遇到的那个），但在 BEV 中我们把它当成"28% 占据"——这是类别错误（category error）。
-
-**根因**：MVSplat 的 opacity 是"对渲染颜色的**相对贡献权重**"，不是"该空间位置被物体占据的**概率**"。
-
-**干预**：用 VGGT depth 做 binary silhouette 监督——该像素有深度值 → 对应光线上的高斯球应该输出 occupation=1（被占据），没有深度 → occupation=0（自由空间）。将 occupancy 从颜色渲染中解耦。
+**机制**：MVSplat 用 3DGS 的 alpha-blending 渲染方程优化 opacity，α 与 SH 颜色联合优化。α 是渲染权重，不是占据概率。高斯位置也被渲染损失驱动——低 α 的高斯可以放在任何位置，只要不影响最终像素颜色。
 
 ---
 
@@ -56,27 +52,31 @@ C_pixel = Σ α_i · c_i · Π(1-α_j)
 
 ---
 
-## 跨模型几何蒸馏：三个干预的统一框架
+## 跨模型几何蒸馏：Phase B 最终方案
 
-**核心创新**：VGGT 从"pipeline 的一个阶段"重新定位为"MVSplat 的几何老师"。
+**核心架构**（详见 `docs/lit_notes/phaseb_design_2026-06-19.md`）：
 
 ```
 训练时：
-  VGGT → depth + pointmap + free-space rays → 几何监督
+  VGGT-Ω → depth + pointmap + free-space rays → 几何监督（frozen）
   SAM2/YOLO → 2D masks → 语义监督
-  MVSplat → 学习预测 occupancy + semantic + confidence（非 opacity + SH + color）
+  ReSplat → 学习预测 occupancy + semantic + free-space（非 opacity + SH + color）
 
 推理时：
-  图像 → MVSplat → BEV occupancy + semantic costmap（单模型，前馈）
+  图像 → ReSplat → BEV occupancy + semantic costmap（单模型，前馈）
 ```
 
-**三个消融实验**（论文核心）：
+**损失函数**（概率占据场 → NLL 推导）：
 
-| 消融 | 干预 | 验证指标 |
-|------|------|---------|
-| A vs Baseline | 用 VGGT depth 监督 occupancy head 替代 opacity | BEV coverage、occupancy accuracy |
-| B vs A | 加入可微 BEV 边缘化（保留 Σ） | Footprint IoU、boundary precision |
-| C vs B | 加入 free-space carving | Costmap free/occupied/unknown 分布 |
+| 损失 | 公式 | 目的 |
+|------|------|------|
+| L_depth | Chamfer(高斯中心, VGGT表面点) | 高斯位置监督 |
+| L_occ | Focal Loss(γ=2) + 类平衡 | 占据分类 |
+| L_free | Hinge(o_i - 0.05)² | 自由空间正则化（独有创新） |
+| L_sem | Cross-Entropy + label smoothing | 语义分类 |
+| L_color | λ·(L1 + SSIM), λ=0.1 | 辅助，防encoder退化 |
+
+**三阶段训练**：Warmup(几何)→Main(占据+自由空间+语义)→Fine-tune(颜色退场)
 
 ---
 

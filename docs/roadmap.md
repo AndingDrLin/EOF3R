@@ -83,12 +83,12 @@
   - [x] YOLO+SAM2 → 3 real objects (4.2s)
   - [x] 消融实验（4 变体 × 3 帧配对）— 复现确认
   - [x] **结论**：IoU=0.052, cov=1.88%(fixed), lethal=55%, conflict=75% → 三个机制性失败确认
-- [ ] Phase B：MVSplat Decoder Retraining — 用 VGGT 几何信号训练新 head
-  - [ ] 添加 occupancy head（sigmoid, 输出 0=free / 1=occupied）
-  - [ ] 添加 semantic head（per-Gaussian class logits）
-  - [ ] 添加 confidence head（epistemic uncertainty）
-  - [ ] 损失：L_depth(VGGT) + L_occ + L_semantic(SAM2 masks) + λ·L_color
-  - [ ] Freeze MVSplat encoder（cost volume），只训练 decoder head
+- [x] Phase A.1：Occupancy Head POC (2026-06-19) — 证明 post-hoc MLP 不够，必须端到端重训
+- [ ] Phase B：ReSplat Decoder Retraining — 用 VGGT-Ω 几何信号训练（🔜 当前）
+  - [x] 损失函数严谨推导（概率占据场→NLL→可计算损失）
+  - [ ] 获取 ReSplat + VGGT-Ω；实现 wrapper + 训练 pipeline
+  - [ ] occupancy head + semantic head（Gaussian adapter 内联合训练）
+  - [ ] $\mathcal{L}_{\text{depth}} + \mathcal{L}_{\text{occ}} + \mathcal{L}_{\text{free}}$（三阶段训练）
 - [ ] Phase C：可微 BEV 边缘化 + Free-Space Carving
   - [ ] 将 numpy BEV 投影替换为 torch 可微操作
   - [ ] 解析 Σ→XZ 投影（保留协方差结构）

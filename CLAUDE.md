@@ -621,6 +621,15 @@ export https_proxy=http://192.168.213.103:53941
 - **Hyperparams**: Optuna (initial)→PBT (adaptive)→BO (fine). RL for per-region Gaussian density allocation.
 - **Inference target**: <10s total (VGGT-Ω ~5s + ReSplat ~2s + BEV ~0.01s)
 
+### Phase B Implementation Status (2026-06-19)
+- **Training module implemented**: `eof3r/src/training/` — losses, heads, supervision, trainer
+- **ReSplat cloned**: `baselines/resplat/` (MIT, cc4594a). Needs Python 3.12 + PyTorch 2.7.0 + CUDA 12.8.
+- **VGGT-Ω cloned**: `baselines/vggt-omega/` (FAIR Noncommercial, 39a0cb8). Checkpoint gated on HuggingFace.
+- **Conda path**: `/home/ubuntu/lyj/anaconda3/` (NOT `~/anaconda3/`). Non-interactive: `source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh`
+- **29/29 tests passing** in `eof3r/tests/test_training.py`
+- **Next steps**: (1) Request VGGT-Ω checkpoint access, (2) Create resplat conda env, (3) Run VGGT supervision pre-computation, (4) Run training
+- **ReSplat env isolation**: ReSplat needs separate env. Pre-compute VGGT supervision in eof3r env, train in resplat env.
+
 ---
 
 ## Quick Reference: Key Documents

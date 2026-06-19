@@ -135,7 +135,7 @@ def create_mock_dataloaders(config: PhaseBConfig):
             return self.size
 
         def __getitem__(self, idx):
-            B, V, H, W = 1, 2, 256, 256
+            V, H, W = 2, 256, 256
             G = 4096  # ~4K Gaussians
 
             return {
@@ -145,8 +145,6 @@ def create_mock_dataloaders(config: PhaseBConfig):
                 "depth": torch.rand(V, H, W) * 10,
                 "surface_points": torch.randn(1000, 3),
                 "labels": {
-                    "occupied": torch.zeros(G).bool(),
-                    "free": torch.zeros(G).bool(),
                     "occupied": torch.randint(0, 2, (G,)).bool(),
                     "free": torch.randint(0, 2, (G,)).bool(),
                 },

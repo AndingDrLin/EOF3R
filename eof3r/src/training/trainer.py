@@ -242,13 +242,22 @@ class PhaseBTrainer:
         ], weight_decay=self.config.weight_decay)
 
         # LR scheduler: cosine annealing with warmup
-        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            self.optimizer,
-            max_lr=[self.config.lr_encoder, self.config.lr_heads, self.config.lr_heads],
-            total_steps=self.config.total_steps,
-            pct_start=0.05,  # 5% warmup
-            anneal_strategy="cos",
-        )
+        # OneCycleLR requires total_steps > 1/pct_start
+        # For small total_steps (debug), use CosineAnnealingLR instead
+        if self.config.total_steps > 20:
+            self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                self.optimizer,
+                max_lr=[self.config.lr_encoder, self.config.lr_heads, self.config.lr_heads],
+                total_steps=self.config.total_steps,
+                pct_start=0.05,  # 5% warmup
+                anneal_strategy="cos",
+            )
+        else:
+            # Fallback for debug mode
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.config.total_steps,
+            )
 
         # State
         self.state = TrainingState(start_time=time.time())
@@ -385,11 +394,11 @@ class PhaseBTrainer:
             if "labels" in batch:
                 labels = batch["labels"]
                 if isinstance(labels, dict):
-                    occ_mask = labels["occupied"][b].to(self.device)
-                    free_mask = labels["free"][b].to(self.device)
+                    occ_mask = labels["occupied"][b].squeeze().to(self.device)
+                    free_mask = labels["free"][b].squeeze().to(self.device)
                     sem_labels = labels.get("semantic")
                     if sem_labels is not None:
-                        sem_labels = sem_labels[b].to(self.device)
+                        sem_labels = sem_labels[b].squeeze().to(self.device)
                 else:
                     # Pre-computed GaussianLabels
                     occ_mask = labels.occupied[b].to(self.device)

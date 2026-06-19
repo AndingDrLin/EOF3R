@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 # Project root
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +42,56 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from eof3r.src.training.heads import OccupancyHead, SemanticHead
 from eof3r.src.training.trainer import PhaseBTrainer, PhaseBConfig
+
+
+class MockGaussianParams:
+    """Mock Gaussian parameters matching ReSplat's output format."""
+    def __init__(self, means, scales, quats, opacities):
+        self.means = means        # (B, G, 3)
+        self.scales = scales      # (B, G, 3)
+        self.quats = quats        # (B, G, 4)
+        self.opacities = opacities  # (B, G)
+
+    @property
+    def covariances(self):
+        """Compute covariance from scales and rotations (simplified: diagonal)."""
+        # (B, G, 3, 3) diagonal covariance from scales
+        B, G, _ = self.scales.shape
+        cov = torch.zeros(B, G, 3, 3, device=self.scales.device)
+        cov[:, :, 0, 0] = self.scales[:, :, 0] ** 2
+        cov[:, :, 1, 1] = self.scales[:, :, 1] ** 2
+        cov[:, :, 2, 2] = self.scales[:, :, 2] ** 2
+        return cov
+
+
+class MockEncoder(nn.Module):
+    """Mock encoder that produces Gaussian parameters from images.
+
+    Replaces ReSplat encoder for testing the training pipeline without
+    the actual model. Produces learnable Gaussian parameters so the
+    training loop can run end-to-end.
+    """
+    def __init__(self, num_gaussians: int = 4096):
+        super().__init__()
+        self.num_gaussians = num_gaussians
+        # Learnable Gaussian parameters (will be shaped by training)
+        self._means = nn.Parameter(torch.randn(1, num_gaussians, 3) * 0.5)
+        self._scales = nn.Parameter(torch.ones(1, num_gaussians, 3) * 0.01)
+        self._quats = nn.Parameter(
+            torch.tensor([1.0, 0.0, 0.0, 0.0]).unsqueeze(0).unsqueeze(0).expand(1, num_gaussians, 4).clone()
+        )
+        self._opacities = nn.Parameter(torch.zeros(1, num_gaussians))
+
+    def forward(self, context, step=0, deterministic=False):
+        B = context["image"].shape[0]
+        means = self._means.expand(B, -1, -1)
+        scales = self._scales.expand(B, -1, -1).abs()  # Ensure positive
+        quats = self._quats.expand(B, -1, -1)
+        quats = quats / quats.norm(dim=-1, keepdim=True)  # Normalize quaternion
+        opacities = torch.sigmoid(self._opacities.expand(B, -1))
+
+        gaussians = MockGaussianParams(means, scales, quats, opacities)
+        return {"gaussians": gaussians}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -271,7 +322,7 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to load ReSplat: {e}")
         logger.info("Using mock encoder for debugging")
-        encoder = torch.nn.Linear(10, 10)  # Placeholder
+        encoder = MockEncoder(num_gaussians=4096)
 
     logger.info("Creating occupancy and semantic heads...")
     occ_head, sem_head = create_heads(config)

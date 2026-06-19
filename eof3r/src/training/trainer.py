@@ -472,6 +472,100 @@ class PhaseBTrainer:
 
         return avg_losses
 
+    def _eval_step(
+        self,
+        batch: dict[str, Any],
+        weights: dict[str, float],
+    ) -> dict[str, Tensor]:
+        """Evaluation step — compute losses without backward/optimizer.
+
+        Same as _train_step but without gradient computation, optimizer update,
+        or loss history tracking. Used inside torch.no_grad() context.
+        """
+        # Move data to device
+        images = batch["images"].to(self.device)
+        poses = batch["poses"].to(self.device)
+        intrinsics = batch["intrinsics"].to(self.device)
+
+        context = {
+            "image": images,
+            "extrinsics": poses,
+            "intrinsics": intrinsics,
+        }
+        encoder_output = self.encoder(context, self.state.global_step, deterministic=True)
+        gaussians = encoder_output["gaussians"]
+
+        means = gaussians.means
+        scales = gaussians.scales
+        rotations = gaussians.quats
+
+        B, G, _ = means.shape
+        means_flat = means.reshape(-1, 3)
+        scales_flat = scales.reshape(-1, 3)
+        rotations_flat = rotations.reshape(-1, 4)
+
+        pred_occ = self.occ_head(means_flat, scales_flat, rotations_flat)
+        pred_sem = self.sem_head(means_flat, scales_flat, rotations_flat)
+        pred_occ = pred_occ.reshape(B, G)
+        pred_sem = pred_sem.reshape(B, G, -1)
+
+        total_losses: dict[str, list[Tensor]] = {}
+        for b in range(B):
+            if "labels" in batch:
+                labels = batch["labels"]
+                if isinstance(labels, dict):
+                    occ_mask = labels["occupied"][b].squeeze().to(self.device)
+                    free_mask = labels["free"][b].squeeze().to(self.device)
+                    sem_labels = labels.get("semantic")
+                    if sem_labels is not None:
+                        sem_labels = sem_labels[b].squeeze().to(self.device)
+                else:
+                    occ_mask = labels.occupied[b].to(self.device)
+                    free_mask = labels.free[b].to(self.device)
+                    sem_labels = labels.semantic_labels
+                    if sem_labels is not None:
+                        sem_labels = sem_labels[b].to(self.device)
+            else:
+                vggt_depth = batch["depth"][b, 0].to(self.device)
+                pose = poses[b, 0]
+                K = intrinsics[b, 0]
+                labels_result = label_gaussians_by_vggt_projection(
+                    means_flat[b*G:(b+1)*G],
+                    gaussians.covariances.reshape(-1, 3, 3)[b*G:(b+1)*G],
+                    vggt_depth, pose, K,
+                    kappa=self.config.kappa,
+                )
+                occ_mask = labels_result.occupied
+                free_mask = labels_result.free
+                sem_labels = labels_result.semantic_labels
+
+            surface_points = None
+            if "surface_points" in batch:
+                surface_points = batch["surface_points"][b].to(self.device)
+
+            sample_losses = compute_total_loss(
+                gaussian_means=means_flat[b*G:(b+1)*G],
+                predicted_occupancy=pred_occ[b],
+                semantic_logits=pred_sem[b] if pred_sem.dim() == 3 else None,
+                vggt_points=surface_points,
+                occupied_mask=occ_mask,
+                free_mask=free_mask,
+                semantic_labels=sem_labels,
+                **weights,
+                focal_gamma=self.config.focal_gamma,
+                hinge_epsilon=self.config.hinge_epsilon,
+                ssim_weight=self.config.ssim_weight,
+                label_smoothing=self.config.label_smoothing,
+            )
+
+            for k, v in sample_losses.items():
+                if k not in total_losses:
+                    total_losses[k] = []
+                total_losses[k].append(v)
+
+        avg_losses = {k: torch.stack(v).mean() for k, v in total_losses.items()}
+        return avg_losses
+
     def _get_current_stage(self) -> int:
         """Determine current training stage based on progress."""
         progress = self.state.global_step / max(self.config.total_steps, 1)
@@ -515,13 +609,13 @@ class PhaseBTrainer:
         eval_losses = []
         with torch.no_grad():
             for batch in self.val_loader:
-                # Simplified eval — compute losses without gradient
+                # Eval step — compute losses without backward/optimizer
                 weights = get_stage_weights(
                     self.state.global_step,
                     self.config.total_steps,
                     self.config.stage_weights,
                 )
-                losses = self._train_step(batch, weights)
+                losses = self._eval_step(batch, weights)
                 eval_losses.append({k: v.item() for k, v in losses.items()})
 
         avg_eval = {

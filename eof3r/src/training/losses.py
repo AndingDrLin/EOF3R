@@ -28,6 +28,8 @@ def chamfer_depth_loss(
     gaussian_means: Tensor,
     vggt_points: Tensor,
     occupied_mask: Optional[Tensor] = None,
+    max_gaussians: int = 4096,
+    max_points: int = 2048,
 ) -> Tensor:
     """Bidirectional Chamfer Distance between Gaussian means and VGGT surface points.
 
@@ -43,6 +45,8 @@ def chamfer_depth_loss(
         vggt_points: (M, 3) VGGT surface point cloud.
         occupied_mask: (N,) bool mask for occupied Gaussians. If None, all
             Gaussians are used in the backward term.
+        max_gaussians: Subsample Gaussians if N exceeds this (for memory).
+        max_points: Subsample surface points if M exceeds this (for memory).
 
     Returns:
         Scalar chamfer distance loss.
@@ -52,10 +56,25 @@ def chamfer_depth_loss(
     if gaussian_means.shape[1] != 3 or vggt_points.shape[1] != 3:
         raise ValueError(f"Expected 3D points, got {gaussian_means.shape[1]}, {vggt_points.shape[1]}")
 
+    # Subsample for memory efficiency
+    N = gaussian_means.shape[0]
+    M = vggt_points.shape[0]
+
+    if M > max_points:
+        idx = torch.randperm(M, device=vggt_points.device)[:max_points]
+        vggt_points = vggt_points[idx]
+
     # Forward: for each VGGT point, find nearest Gaussian
-    # (M, 1, 3) - (1, N, 3) -> (M, N) -> (M,)
-    diff_fwd = vggt_points.unsqueeze(1) - gaussian_means.unsqueeze(0)  # (M, N, 3)
-    dist_fwd = (diff_fwd ** 2).sum(dim=-1)  # (M, N)
+    # Use chunked computation for large N
+    if N > max_gaussians:
+        # Random subsample of Gaussians for forward term
+        idx = torch.randperm(N, device=gaussian_means.device)[:max_gaussians]
+        means_fwd = gaussian_means[idx]
+    else:
+        means_fwd = gaussian_means
+
+    diff_fwd = vggt_points.unsqueeze(1) - means_fwd.unsqueeze(0)  # (M, N', 3)
+    dist_fwd = (diff_fwd ** 2).sum(dim=-1)  # (M, N')
     min_dist_fwd = dist_fwd.min(dim=1).values  # (M,)
     loss_fwd = min_dist_fwd.mean()
 
@@ -65,12 +84,17 @@ def chamfer_depth_loss(
     else:
         means_bwd = gaussian_means
 
+    # Subsample for backward term too
+    if means_bwd.shape[0] > max_gaussians:
+        idx = torch.randperm(means_bwd.shape[0], device=means_bwd.device)[:max_gaussians]
+        means_bwd = means_bwd[idx]
+
     if means_bwd.shape[0] == 0:
         return loss_fwd
 
-    diff_bwd = means_bwd.unsqueeze(1) - vggt_points.unsqueeze(0)  # (|O|, M, 3)
-    dist_bwd = (diff_bwd ** 2).sum(dim=-1)  # (|O|, M)
-    min_dist_bwd = dist_bwd.min(dim=1).values  # (|O|,)
+    diff_bwd = means_bwd.unsqueeze(1) - vggt_points.unsqueeze(0)  # (|O|', M, 3)
+    dist_bwd = (diff_bwd ** 2).sum(dim=-1)  # (|O|', M)
+    min_dist_bwd = dist_bwd.min(dim=1).values  # (|O|',)
     loss_bwd = min_dist_bwd.mean()
 
     return loss_fwd + loss_bwd

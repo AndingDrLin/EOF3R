@@ -375,10 +375,14 @@ class PhaseBTrainer:
 
         # ReSplat encoder forward pass
         # This produces Gaussian parameters
+        B, V = images.shape[:2]
         context = {
             "image": images,
             "extrinsics": poses,
             "intrinsics": intrinsics,
+            "near": torch.full((B, V), 0.01, device=self.device),
+            "far": torch.full((B, V), 100.0, device=self.device),
+            "index": torch.arange(V, device=self.device).unsqueeze(0).expand(B, -1),
         }
         encoder_output = self.encoder(context, self.state.global_step, deterministic=False)
         gaussians = encoder_output["gaussians"]
@@ -386,7 +390,7 @@ class PhaseBTrainer:
         # Extract Gaussian parameters
         means = gaussians.means        # (B, G, 3)
         scales = gaussians.scales      # (B, G, 3)
-        rotations = gaussians.quats    # (B, G, 4)
+        rotations = gaussians.rotations if hasattr(gaussians, 'rotations') else gaussians.quats  # (B, G, 4)
         opacities = gaussians.opacities  # (B, G)
 
         B, G, _ = means.shape
@@ -505,17 +509,21 @@ class PhaseBTrainer:
         poses = batch["poses"].to(self.device)
         intrinsics = batch["intrinsics"].to(self.device)
 
+        B, V = images.shape[:2]
         context = {
             "image": images,
             "extrinsics": poses,
             "intrinsics": intrinsics,
+            "near": torch.full((B, V), 0.01, device=self.device),
+            "far": torch.full((B, V), 100.0, device=self.device),
+            "index": torch.arange(V, device=self.device).unsqueeze(0).expand(B, -1),
         }
         encoder_output = self.encoder(context, self.state.global_step, deterministic=True)
         gaussians = encoder_output["gaussians"]
 
         means = gaussians.means
         scales = gaussians.scales
-        rotations = gaussians.quats
+        rotations = gaussians.rotations if hasattr(gaussians, 'rotations') else gaussians.quats
 
         B, G, _ = means.shape
         means_flat = means.reshape(-1, 3)

@@ -103,19 +103,23 @@ logger = logging.getLogger(__name__)
 def load_resplat_encoder(config: PhaseBConfig):
     """Load ReSplat encoder for training.
 
-    The encoder is the pretrained ReSplat model. During Phase B training,
-    we fine-tune it with geometric supervision while training the new
-    occupancy and semantic heads.
+    Uses the lightweight loader that bypasses ReSplat's Hydra config system.
+    Requires the resplat conda env (Python 3.12 + PyTorch 2.7 + gsplat + pointops).
     """
-    from eof3r.src.foreground.resplat_wrapper import ReSplatWrapper
-
-    resplat = ReSplatWrapper()
-    resplat.build(
-        checkpoint="haofeixu/resplat-base-re10k",
-        num_refine=0,  # No refinement during training
+    import os
+    checkpoint_path = os.environ.get(
+        "RESPLAT_CHECKPOINT",
+        str(PROJECT_ROOT / "baselines" / "resplat" / "pretrained"
+            / "resplat-base-re10k-256x256-view2-b90d1b53.pth"),
     )
+    if not Path(checkpoint_path).exists():
+        raise FileNotFoundError(
+            f"ReSplat checkpoint not found: {checkpoint_path}\n"
+            f"Download from MODEL_ZOO.md or set RESPLAT_CHECKPOINT env var."
+        )
 
-    return resplat.model.encoder
+    from eof3r.src.foreground.resplat_encoder import load_resplat_encoder as _load
+    return _load(checkpoint_path)
 
 
 def create_heads(config: PhaseBConfig):

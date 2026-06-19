@@ -110,13 +110,16 @@ All experiments are driven by YAML configs inheriting from `eof3r/configs/defaul
 | 2 | **Covariance Loss** | BEV scatter+smooth discards Σ→anisotropic→isotropic inflation by `3·max(scale)` | Fixed-grid coverage=1.88%, dynamic-grid=85.5% (self-adaptive artifact) |
 | 3 | **No Free-Space** | VGGT pointmap surfaces all→occupied. No FREE/OCCUPIED/UNKNOWN distinction | Costmap lethal=55%, free=42%, cannot distinguish free from unknown |
 
-### Architecture: VGGT-Ω as Teacher, ReSplat as Student
+### Architecture: VGGT as Teacher, ReSplat as Student
+
+> **Teacher 选型**：当前使用原版 VGGT（已验证，13.6s）。论文最终阶段切换到 VGGT-Ω（+26% depth 精度）。
+> 切换不影响方法论，只影响监督信号质量。
 
 ```
                     TRAINING                              │        INFERENCE
                                                           │
   ┌──────┐    ┌─────────┐                                │   ┌──────┐
-  │ SAM2 │    │ VGGT-Ω  │  ← frozen teachers             │   │ RGB  │
+  │ SAM2 │    │  VGGT   │  ← frozen teachers             │   │ RGB  │
   └──┬───┘    └────┬────┘                                │   └──┬───┘
      │2D masks     │depth, pointmap, free-space rays     │      │
      │             │                                      │      ▼
@@ -138,7 +141,7 @@ All experiments are driven by YAML configs inheriting from `eof3r/configs/defaul
 
 Each Gaussian defines an occupancy field: $p_i(\mathbf{x}) = o_i \cdot \mathcal{N}(\mathbf{x}; \boldsymbol{\mu}_i, \boldsymbol{\Sigma}_i)$
 
-VGGT-Ω provides per-pixel depth $D^{\text{vggt}}$ and pointmap $\mathcal{P}^{\text{vggt}}$.  Per-Gaussian labeling via projection to VGGT camera:
+VGGT provides per-pixel depth $D^{\text{vggt}}$ and pointmap $\mathcal{P}^{\text{vggt}}$.  Per-Gaussian labeling via projection to VGGT camera:
 
 $$\Delta d_i = \tilde{\mu}_i^z - D^{\text{vggt}}(\pi(\tilde{\boldsymbol{\mu}}_i)), \quad \sigma_i = \kappa \cdot \max\text{eig}(\boldsymbol{\Sigma}_i)$$
 
@@ -599,7 +602,7 @@ export https_proxy=http://192.168.213.103:53941
 - Stubs kept alongside real wrappers for CI/testing without GPU.
 - YOLOv8-nano (6MB) → SAM2 box-prompt (65→3 objects, real COCO semantics, 2.5× speedup).
 - Dynamic BEV grid (auto bounds) via `set_bounds_from_points()` — prevents shape mismatch.
-- **Phase B design (2026-06-19)**: VGGT-Ω teacher + ReSplat student (16× fewer Gaussians), probabilistic occupancy-field loss derivation, 3-stage training, RL for Gaussian density allocation, PBT for hyperparams.
+- **Phase B design (2026-06-19)**: VGGT teacher (原版，最终切换 Ω) + ReSplat student (16× fewer Gaussians), probabilistic occupancy-field loss derivation, 3-stage training, RL for Gaussian density allocation, PBT for hyperparams.
 
 ### Conda in Non-Interactive Shells
 - Non-interactive shells skip `.bashrc` → use `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`
@@ -615,19 +618,22 @@ export https_proxy=http://192.168.213.103:53941
 - **Proved**: Gaussian positions are the problem, not opacity prediction. Must retrain decoder end-to-end.
 
 ### Phase B Design (see `docs/lit_notes/phaseb_design_2026-06-19.md` for full derivation)
-- **Teacher**: VGGT-Ω (CVPR 2026 Oral, depth δ1.25=93.5%, 1.6× faster than VGGT). Frozen, offline pre-computed.
+- **Teacher**: VGGT (原版，已验证 13.6s)。最终阶段切换 VGGT-Ω (CVPR 2026 Oral, +26% depth)。
 - **Student**: ReSplat (16× fewer Gaussians, recurrent refinement) preferred; CoSplat (tri-plane consensus) backup.
 - **Loss**: Probabilistic occupancy field→NLL→Chamfer+Focal+Hinge+CE+L1. 3-stage training schedule.
+- **AutoLab confirmed**: Focal loss 3.5× > BCE, 3-stage schedule 20.6% > uniform, 30K steps sufficient.
 - **Hyperparams**: Optuna (initial)→PBT (adaptive)→BO (fine). RL for per-region Gaussian density allocation.
-- **Inference target**: <10s total (VGGT-Ω ~5s + ReSplat ~2s + BEV ~0.01s)
+- **Inference target**: <10s total (VGGT ~14s → ReSplat ~2s + BEV ~0.01s; Ω upgrade: ~5s + 2s + 0.01s)
 
 ### Phase B Implementation Status (2026-06-19)
-- **Training module implemented**: `eof3r/src/training/` — losses, heads, supervision, trainer
+- **Training module implemented**: `eof3r/src/training/` — losses, heads, supervision, trainer, train script
+- **AutoLab 8 experiments complete** (mock data): pipeline verified, focal loss 3.5× > BCE, stage schedule 20.6% > uniform
 - **ReSplat cloned**: `baselines/resplat/` (MIT, cc4594a). Needs Python 3.12 + PyTorch 2.7.0 + CUDA 12.8.
 - **VGGT-Ω cloned**: `baselines/vggt-omega/` (FAIR Noncommercial, 39a0cb8). Checkpoint gated on HuggingFace.
+- **Teacher decision**: Use original VGGT for now (verified, 13.6s). Switch to VGGT-Ω at final stage.
 - **Conda path**: `/home/ubuntu/lyj/anaconda3/` (NOT `~/anaconda3/`). Non-interactive: `source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh`
 - **29/29 tests passing** in `eof3r/tests/test_training.py`
-- **Next steps**: (1) Request VGGT-Ω checkpoint access, (2) Create resplat conda env, (3) Run VGGT supervision pre-computation, (4) Run training
+- **Next steps**: (1) VGGT supervision pre-computation on Re10k, (2) Load real ReSplat encoder, (3) Train with real data, (4) Evaluate with real metrics
 - **ReSplat env isolation**: ReSplat needs separate env. Pre-compute VGGT supervision in eof3r env, train in resplat env.
 
 ---

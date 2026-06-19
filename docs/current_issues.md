@@ -1,114 +1,112 @@
 # 当前问题与解决方案
 
-> 更新时间：2026-06-19
-> Phase A 消融 + Phase A.1 POC 均已完成。方向确认：**跨模型几何蒸馏**——VGGT-Ω 为 teacher，ReSplat 为 student。
+> 更新时间：2026-06-19（AutoLab 8 实验完成后）
+> Phase A 消融 + Phase A.1 POC 均已完成。方向确认：**跨模型几何蒸馏**——VGGT 为 teacher，ReSplat 为 student。
 > 损失函数已完成严谨数学推导（`docs/lit_notes/phaseb_design_2026-06-19.md` §2）。
+> AutoLab 完成 8 个 mock-data 实验，验证了训练 pipeline 和 loss 函数的通用性质。
 
 ---
 
-## 三个机制性失败模式 + POC 定量证据
+## 当前阶段：Phase B — 准备真实数据训练
 
-### 🔴 失败模式 1：Opacity ≠ Occupancy
+### ✅ 已完成
 
-**POC 实验定量证据**（`test_occupancy_head.py`, 2026-06-19）：
-- VGGT depth 投影标记：2.6% occupied, 68.9% free, 28.5% unknown
-- Post-hoc MLP val acc=96.5% 但 BEV coverage<1%（所有方法）
-- **根因升级**：不仅是 opacity 值的问题——**Gaussian 位置本身就不对**（仅 2.6% 靠近 VGGT 表面，为渲染优化而非几何准确）
-- **结论**：必须端到端重训 decoder + Gaussian adapter，几何 loss 反传至 μ, Σ
+1. **训练模块完整实现**：losses, heads, supervision, trainer, train script
+2. **训练 pipeline 验证**：8 个 mock-data 实验全部成功（0 NaN, 0 crash）
+3. **Loss 函数消融**（mock data）：
+   - Focal loss 比 BCE 好 3.5×（0.208 vs 0.723）— 类别不平衡场景下 BCE 不可用
+   - 3-stage schedule 比 uniform 好 20.6%（0.359 vs 0.433）
+   - 30K steps 已收敛，50K 无额外收益
+4. **代码改进**：MockEncoder、eval_step 修复、loss weight CLI 参数
 
-**机制**：MVSplat 用 3DGS 的 alpha-blending 渲染方程优化 opacity，α 与 SH 颜色联合优化。α 是渲染权重，不是占据概率。高斯位置也被渲染损失驱动——低 α 的高斯可以放在任何位置，只要不影响最终像素颜色。
+### 🔴 当前瓶颈（按优先级）
 
----
+#### 瓶颈 1：没有真实 VGGT supervision 数据
 
-### 🔴 失败模式 2：协方差结构在 BEV 投影中丢失
+所有 AutoLab 实验用的是 mock 数据（随机 Gaussian 参数和标签）。这意味着：
+- Loss 下降不代表模型学到了几何
+- Chamfer/hinge/kappa 的真实贡献被噪声掩盖
+- 核心创新（occupancy head 替代 opacity）**未被验证**
 
-**现象**：BEV 投影时用各向同性 `scatter + gaussian_smooth(σ=avg_scale×3)`，完全丢失 3D 协方差。
+**解决**：用原版 VGGT 对 Re10k 数据预计算 supervision（depth + pointmap + free-space rays）。
 
-**机制**：3DGS 每个高斯球有完整 3×3 协方差 Σ（编码形状、大小、朝向）。投影到 BEV（XY 平面）时应做高度维度的**边缘化**（marginalization）：从 Σ 提取 XZ 子矩阵得到 2D 协方差，保持各向异性和朝向信息。当前 scatter+smooth：
-1. 取中心 (x,z) → **丢弃 Σ**
-2. 用 `avg(scale_x, scale_z)` 作为固定 σ → **忽略各向异性**
-3. 各向同性 Gaussian smooth → **忽略 XZ 相关性**
+#### 瓶颈 2：Mock encoder 不产生真实 Gaussian 参数
 
-**结果**：10cm 宽、1m 高的椅腿高斯球被放大为 `3×max(scale)` 的圆形——严重过度膨胀。
+当前 MockEncoder 是 `nn.Parameter(torch.randn(...))`，不看输入图像。
+训练 loss 下降只说明 head 学会了分类随机标签，不代表 Gaussian 位置被拉到真实表面。
 
-**干预**：可微 BEV 边缘化——对每个高斯球的 Σ 在高度维度做解析投影，保留完整 2D 协方差。等价于光线从上方穿过高斯球累积 opacity。
+**解决**：加载真实 ReSplat encoder（预训练权重），冻结 encoder 训练 heads。
 
----
+#### 瓶颈 3：ReSplat 环境隔离
 
-### 🔴 失败模式 3：无自由空间建模
+ReSplat 需要 Python 3.12 + PyTorch 2.7.0 + CUDA 12.8，与 eof3r env 不兼容。
 
-**现象**：Costmap 中 lethal=55%, free=42%，无法区分"被占据"和"未观察到"。
+**解决**：创建独立 `resplat` conda env。VGGT supervision 预计算在 eof3r env 完成，训练在 resplat env 运行。
 
-**机制**：VGGT pointmap 给了表面点→我们全部当作"占据"→投影到 BEV。但每个 VGGT 像素对应一条从相机到表面的**光线**：
-```
-相机 ─FREE→ [沙发表面] ─UNKNOWN→ [墙（被遮挡）]
-```
-正确的占据模型应对每条 VGGT 光线做 free-space carving：
-- 相机到表面：**FREE**
-- 表面附近（±σ）：**OCCUPIED**
-- 表面后方：**UNKNOWN**（被遮挡，无法确定）
+#### 瓶颈 4：Phase C（可微 BEV）未开始
 
-**干预**：Ray-based free-space carving——用 VGGT depth 对每条光线标记三区域。这些标记作为训练监督：MVSplat 的高斯球在 free 区域应输出 occupancy=0，在 occupied 区域应输出 occupancy=1。
+协方差结构丢失是 Phase A 确认的第二大失败。当前 BEV 投影不可微，无法端到端训练。
+
+**解决**：Phase C 实现解析 Σ→XZ 投影 + 可微 BEV 边缘化。
 
 ---
 
-## 跨模型几何蒸馏：Phase B 最终方案
+## 三个机制性失败模式 — 修复状态
 
-**核心架构**（详见 `docs/lit_notes/phaseb_design_2026-06-19.md`）：
+| # | 失败模式 | 修复方案 | 当前状态 | 验证标准 |
+|---|---------|---------|---------|---------|
+| 1 | **Opacity ≠ Occupancy** | Occupancy head + 端到端重训 | ❌ 未验证（mock data） | 训练后 >50% Gaussians 靠近 VGGT 表面（当前 2.6%） |
+| 2 | **协方差结构丢失** | 可微 BEV 边缘化（Phase C） | ⬜ 未开始 | BEV coverage 从 1.88% 提升到 >30% |
+| 3 | **无自由空间建模** | VGGT 光线 free-space carving | ❌ 未验证（mock data） | Costmap lethal 从 55% 降到 <20% |
 
-```
-训练时：
-  VGGT-Ω → depth + pointmap + free-space rays → 几何监督（frozen）
-  SAM2/YOLO → 2D masks → 语义监督
-  ReSplat → 学习预测 occupancy + semantic + free-space（非 opacity + SH + color）
+---
 
-推理时：
-  图像 → ReSplat → BEV occupancy + semantic costmap（单模型，前馈）
-```
+## 教师模型选型决策（2026-06-19 更新）
 
-**损失函数**（概率占据场 → NLL 推导）：
+**原计划**：VGGT-Ω (CVPR 2026 Oral) 作为 geometry teacher。
+**当前决策**：先用**原版 VGGT**，最后阶段再切换到 VGGT-Ω。
 
-| 损失 | 公式 | 目的 |
-|------|------|------|
-| L_depth | Chamfer(高斯中心, VGGT表面点) | 高斯位置监督 |
-| L_occ | Focal Loss(γ=2) + 类平衡 | 占据分类 |
-| L_free | Hinge(o_i - 0.05)² | 自由空间正则化（独有创新） |
-| L_sem | Cross-Entropy + label smoothing | 语义分类 |
-| L_color | λ·(L1 + SSIM), λ=0.1 | 辅助，防encoder退化 |
+**原因**：
+1. VGGT-Ω checkpoint 需要 HuggingFace gated 访问权限，申请流程不确定
+2. VGGT-Ω 需要 Python 3.12 + PyTorch 2.7，环境搭建复杂
+3. 原版 VGGT 已验证可用（13.6s, 1B model, depth δ1.25=67.5%）
+4. 先用 VGGT 跑通整个 pipeline，验证核心方法有效，再升级 teacher 不影响结论
+5. VGGT-Ω 的优势（+26% depth 精度, 1.6× 更快）是锦上添花，不是方法论依赖
 
-**三阶段训练**：Warmup(几何)→Main(占据+自由空间+语义)→Fine-tune(颜色退场)
+**切换时机**：Phase B/C/D 全部完成、论文实验跑完后，用 VGGT-Ω 替换 VGGT 重新跑一遍，作为最终结果。
 
 ---
 
 ## 已解决的工程问题（存档）
 
 - ✅ SAM2 过分割 + 无语义：YOLOv8-nano (6MB) → SAM2 box-prompt，65→3 objects，真实 COCO 标签
-- ✅ 坐标系不匹配：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 从无到有（证明 FG 在 BG 地面上）
+- ✅ 坐标系不匹配：VGGT/MVSplat 坐标帧统一 + OpenCV→Y-up 转换，drivable conflict 从无到有
 - ✅ VGGT scale 归一化：地面平面恢复 ×7.834 尺度因子 + 动态 BEV grid
 - ✅ Fusion 速度：130s → 0.05s（矢量化 bincount + gaussian_filter）
 - ✅ eof3r 统一环境：SAM2 + VGGT + MVSplat 三个真模型均在同一 env 验证通过
-- ✅ 项目解耦：wrappers 优先使用 pip 安装的包，baselines/ 仅作开发 fallback
-- ✅ 项目重构：代码集中于 `eof3r/`，文档集中于 `docs/`
-- ✅ SAM2/VGGT clone（GitHub TLS）：通过代理解决
-- ✅ 2026-06-19 消融复验：4 变体 × 3 帧配对复现，固定 grid coverage=1.88% vs 动态 grid 85.5%（自适应假象确认）
-- ✅ Conda 非交互 shell 问题：已文档化 workaround
+- ✅ 2026-06-19 消融复验：4 变体 × 3 帧配对复现，三个失败模式确认
+- ✅ 2026-06-19 AutoLab：8 实验完成，训练 pipeline 验证，focal loss + stage schedule 确认有效
+- ✅ 2026-06-19 Trainer 修复：eval_step (no_grad backward bug) + MockEncoder + CLI args
 
 ---
 
 ## 环境信息（更新于 2026-06-19）
 
-**唯一环境**：`eof3r` — Python 3.10, torch 2.5.1+cu121, GPU NVIDIA RTX A6000 (48GB)
+**主环境**：`eof3r` — Python 3.10, torch 2.5.1+cu121, GPU NVIDIA RTX A6000 (48GB)
 **峰值显存**（三模型全部加载）: ~6.4 GB
-**新增依赖**：ultralytics (YOLOv8-nano, 6MB)
-**Conda**：非交互 shell 需 `source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r`；交互终端开箱即用。
+**Conda 路径**：`/home/ubuntu/lyj/anaconda3/`（非交互 shell 需 source + activate）
+**GPU 显存安全阈值**：<90%（44GB）
 
 ### 复验 Pipeline 命令
 
 ```bash
 # E2E pipeline: fixed-grid metrics (coverage 1.88%, IoU 0.0047)
-source ~/anaconda3/etc/profile.d/conda.sh && conda activate eof3r
+source /home/ubuntu/lyj/anaconda3/etc/profile.d/conda.sh && conda activate eof3r
 python eof3r/scripts/eval/test_e2e_pipeline.py
 
 # Ablation: 4 variants × 3 frame pairs (dynamic-grid metrics)
 python eof3r/scripts/eval/ablation_study.py
+
+# AutoLab: Phase B training with mock data
+python eof3r/scripts/train/train_phase_b.py --batch-size 4 --total-steps 30000 --device cuda
 ```

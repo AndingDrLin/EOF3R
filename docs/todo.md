@@ -97,11 +97,12 @@
 ### Phase B：ReSplat Decoder Retraining（当前）🔜
 
 > 完整设计见 `docs/lit_notes/phaseb_design_2026-06-19.md`
+> **Teacher 选型决策**：先用原版 VGGT（已验证，13.6s），最后阶段再切换 VGGT-Ω。
 
 - [x] **Phase A.1 POC** (2026-06-19): post-hoc MLP 无效 → 确认端到端重训必要性
 - [x] 损失函数严谨数学推导（概率占据场→NLL→Chamfer+Focal+Hinge+CE+L1）
 - [x] 后端选型分析：首选 ReSplat (16× fewer Gaussians)，备选 CoSplat
-- [x] Teacher 选型：VGGT-Ω (CVPR 2026 Oral, depth δ1.25=93.5%)
+- [x] Teacher 选型：先用 VGGT（已验证），最终切换 VGGT-Ω
 - [x] 超参优化策略：Optuna → PBT → BO；RL 用于高斯密度分配
 - [x] 获取 ReSplat 代码 (github.com/cvg/ReSplat, MIT, cc4594a)
 - [x] 获取 VGGT-Ω 代码 (github.com/facebookresearch/vggt-omega, 39a0cb8)
@@ -112,11 +113,12 @@
 - [x] 实现 VGGT 监督预计算脚本 (`eof3r/scripts/preprocess/precompute_vggt_supervision.py`)
 - [x] 实现三阶段训练器 (`eof3r/src/training/trainer.py`)
 - [x] 实现训练脚本 (`eof3r/scripts/train/train_phase_b.py`)
-- [ ] 申请 VGGT-Ω checkpoint 访问权限 (HuggingFace gated)
-- [ ] 设置 ReSplat 独立 conda 环境 (Python 3.12 + PyTorch 2.7.0 + CUDA 12.8)
-- [ ] 运行 VGGT 监督预计算 on Re10k
-- [ ] 运行三阶段训练 on Re10k
-- [ ] 验证：对比 baseline opacity vs retrained occupancy BEV 质量
+- [x] **AutoLab 8 实验** (2026-06-19): mock data pipeline 验证，focal 3.5× > BCE, stage schedule 20.6% > uniform
+- [ ] **P0** 用 VGGT 对 Re10k 预计算 supervision（depth + pointmap + free-space rays）
+- [ ] **P0** 加载真实 ReSplat encoder（冻结 encoder，训练 heads）
+- [ ] **P0** 用真实 supervision 重跑训练 + 消融
+- [ ] **P1** 创建 ReSplat 独立 conda env（如需要）
+- [ ] **P2** 论文完成后切换 VGGT-Ω 重跑最终结果
 
 ### Phase C：可微 BEV + Free-Space Carving
 - [ ] 将 numpy BEV 替换为 torch 可微操作

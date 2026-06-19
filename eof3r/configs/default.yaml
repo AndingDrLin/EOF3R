@@ -185,6 +185,61 @@ architecture:
     rgb: false              # SH/color disabled (not a core output)
     sh_degree: 0            # 0 = no SH, kept for baseline compatibility
 
+# ---- Phase B: Cross-Model Geometric Distillation ----
+phase_b:
+  enabled: true
+  # Teacher model
+  teacher:
+    model: vggt              # vggt (current) / vggt_omega (when checkpoint available)
+    checkpoint: facebook/VGGT-1B
+    max_resolution: 512
+  # Student model
+  student:
+    model: resplat           # resplat (preferred) / cosplat (backup)
+    checkpoint: haofeixu/resplat-base-re10k
+    num_refine: 0            # no refinement during training
+  # Training schedule
+  training:
+    total_steps: 100000
+    stage1_ratio: 0.3        # Warmup: move Gaussians to surfaces
+    stage2_ratio: 0.5        # Main: occupancy + free-space + semantics
+    stage3_ratio: 0.2        # Fine-tune: refine, color exits
+  # Loss weights per stage
+  loss_weights:
+    stage1: {alpha: 1.0, beta: 0.3, gamma: 0.1, delta: 0.0, eta: 0.3}
+    stage2: {alpha: 0.5, beta: 1.0, gamma: 0.5, delta: 0.3, eta: 0.1}
+    stage3: {alpha: 0.3, beta: 1.0, gamma: 1.0, delta: 0.5, eta: 0.05}
+  # Loss hyperparameters
+  loss_params:
+    focal_gamma: 2.0
+    hinge_epsilon: 0.05
+    ssim_weight: 0.2
+    label_smoothing: 0.1
+    kappa: 3.0             # adaptive threshold multiplier
+  # Optimizer
+  optimizer:
+    lr_encoder: 0.0001     # lower LR for pretrained encoder
+    lr_heads: 0.001        # higher LR for new heads
+    weight_decay: 0.0001
+    gradient_clip_val: 0.5
+  # Occupancy head architecture
+  occupancy_head:
+    input_dim: 10          # 3 means + 3 scales + 4 rotation
+    hidden_dims: [64, 32]
+    dropout: 0.1
+  # Semantic head architecture
+  semantic_head:
+    num_classes: 10        # COCO subset for campus delivery
+    input_dim: 10
+    hidden_dims: [64, 32]
+    dropout: 0.1
+  # Data
+  data:
+    supervision_dir: null  # path to pre-computed VGGT supervision
+    batch_size: 1
+    num_workers: 4
+    image_shape: [256, 256]
+
 # ---- 评估 ----
 evaluation:
   # 占据与规划指标（主）

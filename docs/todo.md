@@ -103,12 +103,19 @@
 - [x] 后端选型分析：首选 ReSplat (16× fewer Gaussians)，备选 CoSplat
 - [x] Teacher 选型：VGGT-Ω (CVPR 2026 Oral, depth δ1.25=93.5%)
 - [x] 超参优化策略：Optuna → PBT → BO；RL 用于高斯密度分配
-- [ ] 获取 ReSplat 代码 + VGGT-Ω checkpoint
-- [ ] 实现 ReSplat wrapper（替换 MVSplat wrapper）
-- [ ] 实现 occupancy head + semantic head（在 Gaussian adapter 内）
-- [ ] 实现 $\mathcal{L}_{\text{depth}} + \mathcal{L}_{\text{occ}} + \mathcal{L}_{\text{free}}$ 
-- [ ] 离线预计算 VGGT-Ω 监督（深度+位姿→训练 dataloader）
-- [ ] 三阶段训练（Warmup→Main→Fine-tune）on Re10k
+- [x] 获取 ReSplat 代码 (github.com/cvg/ReSplat, MIT, cc4594a)
+- [x] 获取 VGGT-Ω 代码 (github.com/facebookresearch/vggt-omega, 39a0cb8)
+- [x] 实现 ReSplat wrapper (`eof3r/src/foreground/resplat_wrapper.py`)
+- [x] 实现 occupancy head + semantic head (`eof3r/src/training/heads.py`)
+- [x] 实现损失函数 (`eof3r/src/training/losses.py`): L_depth + L_occ + L_free + L_sem + L_color
+- [x] 实现 VGGT 监督标注 (`eof3r/src/training/supervision.py`): 逐高斯投影标记
+- [x] 实现 VGGT 监督预计算脚本 (`eof3r/scripts/preprocess/precompute_vggt_supervision.py`)
+- [x] 实现三阶段训练器 (`eof3r/src/training/trainer.py`)
+- [x] 实现训练脚本 (`eof3r/scripts/train/train_phase_b.py`)
+- [ ] 申请 VGGT-Ω checkpoint 访问权限 (HuggingFace gated)
+- [ ] 设置 ReSplat 独立 conda 环境 (Python 3.12 + PyTorch 2.7.0 + CUDA 12.8)
+- [ ] 运行 VGGT 监督预计算 on Re10k
+- [ ] 运行三阶段训练 on Re10k
 - [ ] 验证：对比 baseline opacity vs retrained occupancy BEV 质量
 
 ### Phase C：可微 BEV + Free-Space Carving

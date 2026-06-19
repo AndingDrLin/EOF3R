@@ -64,6 +64,34 @@ baselines:
            NOT registered in e2e pipeline yet.
     patched: false
 
+  - name: resplat
+    url: https://github.com/cvg/ReSplat
+    branch: main
+    commit: cc4594a  # "Update MODEL_ZOO.md" — main branch head as of 2026-06-19
+    clone_date: 2026-06-19
+    env: resplat  # needs Python 3.12 + PyTorch 2.7.0 + CUDA 12.8
+    notes: >
+      Phase B student model. Recurrent Gaussian Splatting with 16× fewer Gaussians
+      than per-pixel methods (~8K vs 131K). MIT license. Pretrained weights on
+      HuggingFace: haofeixu/resplat. Uses gsplat renderer (not original 3DGS CUDA).
+      Key: latent_downsample=4, Point Transformer backbone, UniMatch depth.
+    patched: false
+
+  # --- Teacher: VGGT-Ω (Phase B) ---
+  - name: vggt-omega
+    url: https://github.com/facebookresearch/vggt-omega
+    branch: main
+    commit: 39a0cb8  # main branch head as of 2026-06-19
+    clone_date: 2026-06-19
+    env: eof3r  # compatible with eof3r env (torch>=2.3)
+    notes: >
+      Phase B geometry teacher. CVPR 2026 Oral. VGGT successor with +26% depth
+      accuracy (δ1.25=93.5%) and 1.6× faster inference. ~1B params.
+      Checkpoints gated on HuggingFace (facebook/VGGT-Omega) — request access.
+      FAIR Noncommercial Research License (OK for thesis).
+      Outputs: depth, depth_conf, pose_enc, camera_and_register_tokens.
+    patched: false
+
   # --- Enhanced 3R Models ---
   # - name: mast3r
   #   url: https://github.com/naver/mast3r

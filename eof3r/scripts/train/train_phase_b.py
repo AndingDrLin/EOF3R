@@ -292,6 +292,12 @@ def main():
         action="store_true",
         help="Use BCE instead of focal loss for occupancy (ablation)",
     )
+    parser.add_argument(
+        "--kappa",
+        type=float,
+        default=None,
+        help="Override kappa (adaptive threshold multiplier for Gaussian-surface labeling)",
+    )
     args = parser.parse_args()
 
     # Build config
@@ -346,6 +352,10 @@ def main():
     if args.use_bce:
         config.use_bce = True
         logger.info("Using BCE instead of focal loss for occupancy")
+
+    if args.kappa is not None:
+        config.kappa = args.kappa
+        logger.info(f"Kappa override: {args.kappa}")
 
     if loss_overrides or args.uniform_weights:
         if args.uniform_weights:

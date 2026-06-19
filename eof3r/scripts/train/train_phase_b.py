@@ -136,14 +136,17 @@ def create_heads(config: PhaseBConfig):
     return occ_head, sem_head
 
 
-def create_dataloaders(config: PhaseBConfig):
+def create_dataloaders(config: PhaseBConfig, supervision_dir: str | None = None):
     """Create train and validation dataloaders from pre-computed supervision."""
     from torch.utils.data import DataLoader
     from eof3r.src.training.trainer import VGGTSupervisionDataset
 
-    import os
-    data_root = Path(os.environ.get("EOF3R_DATA", "/data/EOF3R"))
-    supervision_dir = data_root / "processed" / "vggt_supervision"
+    if supervision_dir is None:
+        import os
+        data_root = Path(os.environ.get("EOF3R_DATA", "/data/EOF3R"))
+        supervision_dir = data_root / "processed" / "vggt_supervision"
+    else:
+        supervision_dir = Path(supervision_dir)
 
     if not supervision_dir.exists():
         raise FileNotFoundError(
@@ -151,6 +154,7 @@ def create_dataloaders(config: PhaseBConfig):
             f"Run: python eof3r/scripts/preprocess/precompute_vggt_supervision.py"
         )
 
+    # The directory itself may contain manifest.txt (split-specific) or have train/test subdirs
     train_dataset = VGGTSupervisionDataset(supervision_dir, split="train")
     val_dataset = VGGTSupervisionDataset(supervision_dir, split="test")
 
@@ -298,6 +302,12 @@ def main():
         default=None,
         help="Override kappa (adaptive threshold multiplier for Gaussian-surface labeling)",
     )
+    parser.add_argument(
+        "--supervision-dir",
+        type=str,
+        default=None,
+        help="Path to pre-computed VGGT supervision directory (contains manifest.txt)",
+    )
     args = parser.parse_args()
 
     # Build config
@@ -401,7 +411,7 @@ def main():
     # Create dataloaders
     logger.info("Creating dataloaders...")
     try:
-        train_loader, val_loader = create_dataloaders(config)
+        train_loader, val_loader = create_dataloaders(config, args.supervision_dir)
     except FileNotFoundError as e:
         logger.warning(f"Pre-computed supervision not found: {e}")
         logger.info("Using mock dataloaders for debugging")

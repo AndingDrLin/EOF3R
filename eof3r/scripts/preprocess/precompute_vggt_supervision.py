@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -117,17 +118,31 @@ def load_re10k_scenes(
     return scenes
 
 
-def decode_re10k_image(image_bytes: bytes, target_size: tuple[int, int] = (256, 256)):
-    """Decode JPEG bytes to numpy array."""
+def decode_re10k_image(image_data, target_size: tuple[int, int] = (256, 256)):
+    """Decode Re10k image to numpy array.
+
+    Handles both JPEG bytes and raw torch tensor formats.
+    """
     from PIL import Image
     import io
+
+    # Re10k stores images as torch tensors of JPEG-encoded bytes
+    if isinstance(image_data, torch.Tensor):
+        image_bytes = bytes(image_data.numpy().tolist())
+    elif isinstance(image_data, bytes):
+        image_bytes = image_data
+    else:
+        raise TypeError(f"Unexpected image type: {type(image_data)}")
 
     img = Image.open(io.BytesIO(image_bytes))
     img = img.resize(target_size, Image.BILINEAR)
     return np.array(img)
 
 
-def extract_re10k_cameras(cameras_tensor: torch.Tensor):
+def extract_re10k_cameras(
+    cameras_tensor: torch.Tensor,
+    image_size: tuple[int, int] = (256, 256),
+):
     """Extract intrinsics and extrinsics from Re10k camera format.
 
     Re10k format: (N, 18) where:
@@ -135,18 +150,23 @@ def extract_re10k_cameras(cameras_tensor: torch.Tensor):
         - [4:6] = unused
         - [6:18] = flattened 3x4 world-to-camera matrix
 
+    Args:
+        cameras_tensor: (N, 18) camera parameters.
+        image_size: (H, W) target image size for denormalizing intrinsics.
+
     Returns:
-        intrinsics: (N, 3, 3)
-        extrinsics: (N, 4, 4) camera-from-world
+        intrinsics: (N, 3, 3) with intrinsics scaled to pixel coordinates.
+        extrinsics: (N, 4, 4) camera-from-world.
     """
     N = cameras_tensor.shape[0]
+    H, W = image_size
 
-    # Intrinsics
+    # Intrinsics (normalized → pixel)
     K = torch.eye(3).unsqueeze(0).repeat(N, 1, 1)
-    K[:, 0, 0] = cameras_tensor[:, 0]  # fx
-    K[:, 1, 1] = cameras_tensor[:, 1]  # fy
-    K[:, 0, 2] = cameras_tensor[:, 2]  # cx
-    K[:, 1, 2] = cameras_tensor[:, 3]  # cy
+    K[:, 0, 0] = cameras_tensor[:, 0] * W  # fx * W
+    K[:, 1, 1] = cameras_tensor[:, 1] * H  # fy * H
+    K[:, 0, 2] = cameras_tensor[:, 2] * W  # cx * W
+    K[:, 1, 2] = cameras_tensor[:, 3] * H  # cy * H
 
     # Extrinsics (3x4 → 4x4)
     w2c = torch.zeros(N, 4, 4)
@@ -196,8 +216,8 @@ def process_scene(
     target_size = config.get("image_shape", (256, 256))
     images_np = [decode_re10k_image(img, target_size) for img in images_raw]
 
-    # Extract cameras
-    K, c2w = extract_re10k_cameras(cameras_raw)
+    # Extract cameras (with image size for denormalizing intrinsics)
+    K, c2w = extract_re10k_cameras(cameras_raw, image_size=target_size)
 
     # Run VGGT inference
     try:
@@ -207,16 +227,32 @@ def process_scene(
         return False
 
     # Extract VGGT outputs
-    vggt_depth = torch.from_numpy(vggt_output["pointmap"][..., 2]).float()  # (V, H, W)
-    vggt_poses = torch.from_numpy(vggt_output["camera_poses_wfc_ocv"]).float()  # (V, 4, 4)
-    vggt_pointmap = torch.from_numpy(vggt_output["pointmap"]).float()  # (V, H, W, 3)
+    # pointmap is in Y-up world coords (V, H', W', 3)
+    # camera_poses_wfc_ocv is world-from-camera in OpenCV (V, 4, 4)
+    vggt_pointmap = torch.from_numpy(vggt_output["pointmap"]).float()  # (V, H', W', 3)
+    vggt_wfc_ocv = torch.from_numpy(vggt_output["camera_poses_wfc_ocv"]).float()  # (V, 4, 4)
+
+    # Compute depth maps: project world points into camera frame → Z is depth
+    # depth_v(u,v) = (R_cw @ point_w + t_cw)_z
+    V, H_pm, W_pm, _ = vggt_pointmap.shape
+    vggt_depth = torch.zeros(V, H_pm, W_pm)
+    for v in range(V):
+        wfc = vggt_wfc_ocv[v]  # (4, 4) world-from-camera
+        cfw = torch.inverse(wfc)  # (4, 4) camera-from-world
+        R = cfw[:3, :3]  # (3, 3)
+        t = cfw[:3, 3]   # (3,)
+        # Reshape pointmap for batch matmul: (H*W, 3)
+        pts = vggt_pointmap[v].reshape(-1, 3)  # (H*W, 3)
+        pts_cam = (R @ pts.T).T + t  # (H*W, 3) in camera frame
+        depth_v = pts_cam[:, 2].reshape(H_pm, W_pm).abs()  # |Z|-depth (positive)
+        vggt_depth[v] = depth_v
 
     # For each view, compute surface points
     all_surface_points = []
     for v in range(max_views):
         depth_v = vggt_depth[v]  # (H, W)
         K_v = K[v]  # (3, 3)
-        pose_v = vggt_poses[v]  # (4, 4)
+        pose_v = vggt_wfc_ocv[v]  # (4, 4)
 
         points = compute_vggt_surface_points(
             depth_v, K_v, pose_v,
@@ -227,17 +263,38 @@ def process_scene(
     # Merge surface points from all views
     surface_points = torch.cat(all_surface_points, dim=0)  # (M_total, 3)
 
+    # Normalize scene to unit scale for stable training
+    # The VGGT scale recovery can produce very large coordinates (100s of meters).
+    # Normalizing to ~1 unit makes Chamfer loss and learning rates consistent.
+    centroid = surface_points.mean(dim=0)  # (3,)
+    scale = surface_points.std(dim=0).mean().clamp(min=1e-6)  # scalar
+    # Normalize: shift to origin, scale to unit variance
+    surface_points = (surface_points - centroid) / scale
+    vggt_pointmap_norm = (vggt_pointmap - centroid) / scale
+    # Update depth maps to normalized coordinates
+    for v in range(max_views):
+        wfc = vggt_wfc_ocv[v]
+        cfw = torch.inverse(wfc)
+        R = cfw[:3, :3]
+        t = cfw[:3, 3]
+        pts = vggt_pointmap_norm[v].reshape(-1, 3)
+        pts_cam = (R @ pts.T).T + t
+        vggt_depth[v] = pts_cam[:, 2].abs().reshape(H_pm, W_pm)
+    # Normalize poses (translate camera positions)
+    for v in range(max_views):
+        vggt_wfc_ocv[v, :3, 3] = (vggt_wfc_ocv[v, :3, 3] - centroid) / scale
+
     # Save images
     images_tensor = torch.stack([
         torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
         for img in images_np
     ])  # (V, 3, H, W)
 
-    # Save depth maps
+    # Save depth maps (normalized)
     depth_tensor = vggt_depth  # (V, H, W)
 
-    # Save poses (world-from-camera, OpenCV convention)
-    poses_tensor = vggt_poses  # (V, 4, 4)
+    # Save poses (world-from-camera, normalized)
+    poses_tensor = vggt_wfc_ocv  # (V, 4, 4)
 
     # Save intrinsics
     intrinsics_tensor = K  # (V, 3, 3)
@@ -264,6 +321,8 @@ def process_scene(
         "image_shape": list(target_size),
         "num_surface_points": surface_points.shape[0],
         "vggt_scale_factor": float(vggt_output.get("scale_factor", 1.0)),
+        "norm_centroid": centroid.tolist(),
+        "norm_scale": float(scale),
     }
     with open(scene_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -408,5 +467,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import os
     main()

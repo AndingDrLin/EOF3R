@@ -146,6 +146,11 @@ class VGGTSupervisionDataset:
         - VGGT depth maps
         - VGGT surface point clouds
         - Per-Gaussian labels (occupied/free/unknown) [computed online or pre-computed]
+
+    Args:
+        data_dir: Path to the split-specific directory containing manifest.txt
+            (e.g., outputs/vggt_supervision/test/). The manifest.txt should
+            list scene IDs, one per line.
     """
 
     def __init__(
@@ -159,19 +164,27 @@ class VGGTSupervisionDataset:
 
     def _load_manifest(self) -> list[dict[str, Path]]:
         """Load list of pre-computed supervision files."""
-        manifest_path = self.data_dir / self.split / "manifest.txt"
-        if not manifest_path.exists():
+        # Try split-specific directory first, then direct path
+        split_dir = self.data_dir / self.split
+        if (split_dir / "manifest.txt").exists():
+            manifest_dir = split_dir
+        elif (self.data_dir / "manifest.txt").exists():
+            manifest_dir = self.data_dir
+        else:
             raise FileNotFoundError(
-                f"Supervision manifest not found: {manifest_path}\n"
+                f"Supervision manifest not found at {self.data_dir}/manifest.txt "
+                f"or {split_dir}/manifest.txt\n"
                 f"Run: python eof3r/scripts/preprocess/precompute_vggt_supervision.py"
             )
+
+        manifest_path = manifest_dir / "manifest.txt"
 
         samples = []
         with open(manifest_path) as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    sample_dir = self.data_dir / self.split / line
+                    sample_dir = manifest_dir / line
                     samples.append({
                         "images": sample_dir / "images.pt",
                         "depth": sample_dir / "depth.pt",
@@ -188,14 +201,17 @@ class VGGTSupervisionDataset:
     def __getitem__(self, idx: int) -> dict[str, Any]:
         """Load a pre-computed supervision sample."""
         paths = self.samples[idx]
-        return {
+        sample = {
             "images": torch.load(paths["images"], weights_only=True),
             "depth": torch.load(paths["depth"], weights_only=True),
             "poses": torch.load(paths["poses"], weights_only=True),
             "intrinsics": torch.load(paths["intrinsics"], weights_only=True),
             "surface_points": torch.load(paths["points"], weights_only=True),
-            "labels": torch.load(paths["labels"], weights_only=True),
         }
+        # Labels are optional (computed online during training if absent)
+        if paths["labels"].exists():
+            sample["labels"] = torch.load(paths["labels"], weights_only=True)
+        return sample
 
 
 # ---------------------------------------------------------------------------

@@ -240,12 +240,12 @@ class ReSplatWrapper:
             self._exit_resplat_env()
 
         # Extract Gaussian parameters
-        means = gaussians.means          # (B, G, 3)
-        opacities = gaussians.opacities  # (B, G)
-        scales = gaussians.scales        # (B, G, 3)
-        rotations = gaussians.quats      # (B, G, 4)
-        harmonics = gaussians.harmonics  # (B, G, d_sh, 3)
-        covariances = gaussians.covars   # (B, G, 3, 3)
+        means = gaussians.means              # (B, G, 3)
+        opacities = gaussians.opacities      # (B, G)
+        scales = gaussians.scales            # (B, G, 3)
+        rotations = gaussians.rotations      # (B, G, 4)
+        harmonics = gaussians.harmonics      # (B, G, 3, d_sh)
+        covariances = gaussians.covariances  # (B, G, 3, 3)
 
         # Convert to GaussianData (numpy, CPU)
         gaussians_data = GaussianData(
@@ -253,7 +253,7 @@ class ReSplatWrapper:
             opacities=opacities[0].cpu().numpy(),   # (G,)
             scales=scales[0].cpu().numpy(),         # (G, 3)
             covariances=covariances[0].cpu().numpy(),  # (G, 3, 3)
-            harmonics=harmonics[0].cpu().numpy(),   # (G, d_sh, 3)
+            harmonics=harmonics[0].cpu().numpy().transpose(0, 2, 1),  # (G, d_sh, 3) from (G, 3, d_sh)
             rotations=rotations[0].cpu().numpy(),   # (G, 4)
         )
 

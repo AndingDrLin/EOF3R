@@ -267,6 +267,26 @@ def main():
         default=None,
         help="Override heads learning rate",
     )
+    parser.add_argument(
+        "--alpha", type=float, default=None, help="Override L_depth weight (Chamfer)"
+    )
+    parser.add_argument(
+        "--beta", type=float, default=None, help="Override L_occ weight (Focal)"
+    )
+    parser.add_argument(
+        "--gamma", type=float, default=None, help="Override L_free weight (Hinge)"
+    )
+    parser.add_argument(
+        "--delta", type=float, default=None, help="Override L_sem weight (CE)"
+    )
+    parser.add_argument(
+        "--eta", type=float, default=None, help="Override L_color weight (auxiliary)"
+    )
+    parser.add_argument(
+        "--uniform-weights",
+        action="store_true",
+        help="Use uniform loss weights across all stages (no stage schedule)",
+    )
     args = parser.parse_args()
 
     # Build config
@@ -304,6 +324,38 @@ def main():
 
     if args.lr_heads:
         config.lr_heads = args.lr_heads
+
+    # Apply loss weight overrides
+    loss_overrides = {}
+    if args.alpha is not None:
+        loss_overrides["alpha"] = args.alpha
+    if args.beta is not None:
+        loss_overrides["beta"] = args.beta
+    if args.gamma is not None:
+        loss_overrides["gamma"] = args.gamma
+    if args.delta is not None:
+        loss_overrides["delta"] = args.delta
+    if args.eta is not None:
+        loss_overrides["eta"] = args.eta
+
+    if loss_overrides or args.uniform_weights:
+        if args.uniform_weights:
+            # Use same weights for all stages (ablation: no schedule)
+            base_weights = {
+                "alpha": args.alpha if args.alpha is not None else 1.0,
+                "beta": args.beta if args.beta is not None else 1.0,
+                "gamma": args.gamma if args.gamma is not None else 1.0,
+                "delta": args.delta if args.delta is not None else 0.3,
+                "eta": args.eta if args.eta is not None else 0.1,
+            }
+            config.stage_weights = {1: base_weights, 2: base_weights, 3: base_weights}
+            logger.info(f"Uniform weights across all stages: {base_weights}")
+        else:
+            # Override specific weights in all stages
+            for stage in config.stage_weights:
+                for k, v in loss_overrides.items():
+                    config.stage_weights[stage][k] = v
+            logger.info(f"Loss weight overrides applied: {loss_overrides}")
 
     # Log config
     logger.info("=" * 60)

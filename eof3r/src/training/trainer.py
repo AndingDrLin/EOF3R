@@ -75,6 +75,7 @@ class PhaseBConfig:
     ssim_weight: float = 0.2
     label_smoothing: float = 0.1
     kappa: float = 3.0  # Adaptive threshold multiplier
+    use_bce: bool = False  # Use BCE instead of focal loss (ablation)
 
     # Data
     batch_size: int = 1
@@ -441,6 +442,7 @@ class PhaseBTrainer:
                 hinge_epsilon=self.config.hinge_epsilon,
                 ssim_weight=self.config.ssim_weight,
                 label_smoothing=self.config.label_smoothing,
+                use_bce=self.config.use_bce,
             )
 
             # Accumulate
@@ -556,6 +558,7 @@ class PhaseBTrainer:
                 hinge_epsilon=self.config.hinge_epsilon,
                 ssim_weight=self.config.ssim_weight,
                 label_smoothing=self.config.label_smoothing,
+                use_bce=self.config.use_bce,
             )
 
             for k, v in sample_losses.items():

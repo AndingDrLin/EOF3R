@@ -327,6 +327,7 @@ def compute_total_loss(
     hinge_epsilon: float = 0.05,
     ssim_weight: float = 0.2,
     label_smoothing: float = 0.0,
+    use_bce: bool = False,
 ) -> dict[str, Tensor]:
     """Compute total loss with per-component breakdown.
 
@@ -360,16 +361,22 @@ def compute_total_loss(
         losses["depth"] = l_depth
         total = total + alpha * l_depth
 
-    # L_occ: Focal occupancy loss
+    # L_occ: Focal or BCE occupancy loss
     if occupied_mask is not None and free_mask is not None and beta > 0:
         labeled_mask = occupied_mask | free_mask
         if labeled_mask.any():
             labels = occupied_mask.float()
-            l_occ = focal_occupancy_loss(
-                predicted_occupancy[labeled_mask],
-                labels[labeled_mask],
-                gamma=focal_gamma,
-            )
+            if use_bce:
+                # Standard BCE (ablation: no focal modulation)
+                eps = 1e-6
+                o = predicted_occupancy[labeled_mask].clamp(eps, 1 - eps)
+                l_occ = F.binary_cross_entropy(o, labels[labeled_mask], reduction="mean")
+            else:
+                l_occ = focal_occupancy_loss(
+                    predicted_occupancy[labeled_mask],
+                    labels[labeled_mask],
+                    gamma=focal_gamma,
+                )
             losses["occupancy"] = l_occ
             total = total + beta * l_occ
 

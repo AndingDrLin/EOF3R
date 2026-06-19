@@ -287,6 +287,11 @@ def main():
         action="store_true",
         help="Use uniform loss weights across all stages (no stage schedule)",
     )
+    parser.add_argument(
+        "--use-bce",
+        action="store_true",
+        help="Use BCE instead of focal loss for occupancy (ablation)",
+    )
     args = parser.parse_args()
 
     # Build config
@@ -337,6 +342,10 @@ def main():
         loss_overrides["delta"] = args.delta
     if args.eta is not None:
         loss_overrides["eta"] = args.eta
+
+    if args.use_bce:
+        config.use_bce = True
+        logger.info("Using BCE instead of focal loss for occupancy")
 
     if loss_overrides or args.uniform_weights:
         if args.uniform_weights:

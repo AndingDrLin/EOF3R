@@ -162,7 +162,7 @@ def test_heads():
     rots = rots / rots.norm(dim=-1, keepdim=True)
 
     # Occupancy head
-    occ_head = OccupancyHead()
+    occ_head = OccupancyHead(visual_feature_dim=4)
     occ_pred = occ_head(means, scales, rots)
     print(f"  OccupancyHead: {occ_pred.shape}, range [{occ_pred.min():.3f}, {occ_pred.max():.3f}] ✓")
 
@@ -230,7 +230,7 @@ def test_trainer_loop():
     num_classes = 10
 
     encoder = MockEncoder(num_gaussians)
-    occ_head = OccupancyHead()
+    occ_head = OccupancyHead(visual_feature_dim=4)
     sem_head = SemanticHead(num_classes=num_classes)
 
     # Create mock dataloader
@@ -289,7 +289,7 @@ def test_checkpoint():
     print("=" * 60)
 
     # Create model
-    occ_head = OccupancyHead()
+    occ_head = OccupancyHead(visual_feature_dim=4)
     sem_head = SemanticHead(num_classes=10)
 
     # Save
@@ -303,7 +303,7 @@ def test_checkpoint():
 
     # Load
     checkpoint = torch.load(path)
-    occ_head_new = OccupancyHead()
+    occ_head_new = OccupancyHead(visual_feature_dim=4)
     occ_head_new.load_state_dict(checkpoint["occ_head"])
     print(f"  Loaded checkpoint: ✓")
 

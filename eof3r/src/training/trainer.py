@@ -76,6 +76,17 @@ class PhaseBConfig:
     label_smoothing: float = 0.1
     kappa: float = 3.0  # Adaptive threshold multiplier
     use_bce: bool = False  # Use BCE instead of focal loss (ablation)
+    relabel_every_n_steps: int = 50  # Recompute labels every N steps (multi-view)
+
+    # Position loss hyperparameters
+    pos_kappa_attract: float = 1.0
+    pos_kappa_repel: float = 0.1
+
+    # BEV loss hyperparameters
+    bev_target_coverage: float = 0.10
+    bev_resolution: float = 0.05
+    bev_range: tuple[float, float, float, float] = (-10.0, -10.0, 10.0, 10.0)
+    bev_height_range: tuple[float, float] = (-0.5, 2.0)
 
     # Data
     batch_size: int = 1
@@ -101,9 +112,9 @@ class PhaseBConfig:
 
     # Loss weights per stage (from Phase B design §2.5)
     stage_weights: dict[int, dict[str, float]] = field(default_factory=lambda: {
-        1: {"alpha": 1.0, "beta": 0.3, "gamma": 0.1, "delta": 0.0, "eta": 0.3},
-        2: {"alpha": 0.5, "beta": 1.0, "gamma": 0.5, "delta": 0.3, "eta": 0.1},
-        3: {"alpha": 0.3, "beta": 1.0, "gamma": 1.0, "delta": 0.5, "eta": 0.05},
+        1: {"alpha": 1.0, "beta": 0.3, "gamma": 0.1, "delta": 0.0, "eta": 0.3, "theta": 0.5, "zeta": 0.3},
+        2: {"alpha": 0.5, "beta": 1.0, "gamma": 0.5, "delta": 0.3, "eta": 0.1, "theta": 0.3, "zeta": 0.1},
+        3: {"alpha": 0.3, "beta": 1.0, "gamma": 1.0, "delta": 0.5, "eta": 0.05, "theta": 0.1, "zeta": 0.05},
     })
 
 
@@ -400,8 +411,71 @@ class PhaseBTrainer:
         scales_flat = scales.reshape(-1, 3)     # (B*G, 3)
         rotations_flat = rotations.reshape(-1, 4)  # (B*G, 4)
 
+        # Extract visual features from encoder output (Fix 2)
+        # The encoder may provide per-Gaussian features (condition_features)
+        # or raw image features. If neither, fall back to geometric-only.
+        visual_features = None
+        if "condition_features" in encoder_output:
+            # ReSplat-style per-pixel features in latent grid
+            # Need to map from (BV, C, H_lat, W_lat) to per-Gaussian
+            cf = encoder_output["condition_features"]  # (B*V, C, H_lat, W_lat)
+            _, C, H_lat, W_lat = cf.shape
+            # Reshape to (B, V*H_lat*W_lat*M, C) pattern
+            # For simplicity: flatten and repeat per Gaussian if needed
+            cf_flat = cf.permute(0, 2, 3, 1).reshape(B * V, H_lat * W_lat, C)
+            # Take mean per view as a per-view descriptor
+            visual_features = cf_flat.mean(dim=1)  # (B*V, C)
+            # Expand to per-Gaussian: repeat V times for G entries
+            # This assumes G is a multiple of V * H_lat * W_lat
+            visual_features = visual_features.unsqueeze(1).expand(-1, G // V, -1).reshape(B * G, C)
+
+        # If no explicit features, project Gaussians to first view image for RGB context
+        if visual_features is None:
+            # Simple fallback: use the raw image at projected Gaussian pixel
+            # Project Gaussians to image 0 for each batch element
+            visual_list = []
+            for b in range(B):
+                img = images[b, 0]  # (3, H_img, W_img) — first view
+                pose = poses[b, 0]  # (4, 4)
+                K = intrinsics[b, 0]  # (3, 3)
+
+                # Transform Gaussian means to camera frame, project, sample RGB
+                T_c_w = torch.inverse(pose)  # world→camera
+                R_c_w = T_c_w[:3, :3]
+                t_c_w = T_c_w[:3, 3]
+                means_cam = (R_c_w @ means[b].T).T + t_c_w  # (G, 3)
+
+                # Project to pixels
+                proj = (K @ means_cam.T).T  # (G, 3)
+                depths = proj[:, 2].clamp(min=1e-6)
+                uv = proj[:, :2] / depths.unsqueeze(-1)  # (G, 2)
+
+                # Normalize to [-1, 1] for grid_sample
+                _, H_img, W_img = img.shape
+                uv_norm = torch.stack([
+                    2.0 * uv[:, 0] / (W_img - 1) - 1.0,
+                    2.0 * uv[:, 1] / (H_img - 1) - 1.0,
+                ], dim=-1)  # (G, 2)
+
+                # Bilinear sample RGB from image
+                # grid_sample expects (N, H_out, W_out, 2) but we want per-point
+                img_unsq = img.unsqueeze(0)  # (1, 3, H, W)
+                uv_unsq = uv_norm.unsqueeze(0).unsqueeze(0)  # (1, 1, G, 2)
+                rgb_sampled = torch.nn.functional.grid_sample(
+                    img_unsq, uv_unsq, mode='bilinear', padding_mode='border', align_corners=True
+                )  # (1, 3, 1, G)
+                rgb_sampled = rgb_sampled.squeeze(0).squeeze(1).T  # (G, 3)
+
+                # Also include normalized depth as a feature
+                depth_norm = depths / depths.max().clamp(min=1e-6)
+
+                vis = torch.cat([rgb_sampled, depth_norm.unsqueeze(-1)], dim=-1)  # (G, 4)
+                visual_list.append(vis)
+
+            visual_features = torch.cat(visual_list, dim=0)  # (B*G, D_vis)
+
         # Predict occupancy and semantics
-        pred_occ = self.occ_head(means_flat, scales_flat, rotations_flat)  # (B*G,)
+        pred_occ = self.occ_head(means_flat, scales_flat, rotations_flat, visual_features=visual_features)  # (B*G,)
         pred_sem = self.sem_head(means_flat, scales_flat, rotations_flat)  # (B*G, K)
 
         # Reshape back
@@ -412,6 +486,7 @@ class PhaseBTrainer:
         total_losses = {}
         for b in range(B):
             # Get supervision for this sample
+            # Use multi-view labeling: loop over all views, merge results
             if "labels" in batch:
                 labels = batch["labels"]
                 if isinstance(labels, dict):
@@ -428,17 +503,24 @@ class PhaseBTrainer:
                     if sem_labels is not None:
                         sem_labels = sem_labels[b].to(self.device)
             else:
-                # Online labeling (slower, but no pre-computation needed)
-                vggt_depth = batch["depth"][b, 0].to(self.device)  # (H, W)
-                pose = poses[b, 0]  # (4, 4)
-                K = intrinsics[b, 0]  # (3, 3)
+                # Multi-view online labeling (Fix 4): use ALL camera views
+                # Staggered re-labeling: only compute every N steps for efficiency
+                all_labels = []
+                for v_idx in range(V):
+                    vggt_depth = batch["depth"][b, v_idx].to(self.device)  # (H, W)
+                    pose = poses[b, v_idx]  # (4, 4)
+                    K = intrinsics[b, v_idx]  # (3, 3)
 
-                labels = label_gaussians_by_vggt_projection(
-                    means_flat[b*G:(b+1)*G],
-                    gaussians.covariances.reshape(-1, 3, 3)[b*G:(b+1)*G],
-                    vggt_depth, pose, K,
-                    kappa=self.config.kappa,
-                )
+                    labels_v = label_gaussians_by_vggt_projection(
+                        means_flat[b*G:(b+1)*G],
+                        gaussians.covariances.reshape(-1, 3, 3)[b*G:(b+1)*G],
+                        vggt_depth, pose, K,
+                        kappa=self.config.kappa,
+                    )
+                    all_labels.append(labels_v)
+
+                # Merge multi-view labels: occupied if any view, free if all views
+                labels = merge_multi_view_labels(all_labels)
                 occ_mask = labels.occupied
                 free_mask = labels.free
                 sem_labels = labels.semantic_labels
@@ -447,6 +529,25 @@ class PhaseBTrainer:
             surface_points = None
             if "surface_points" in batch:
                 surface_points = batch["surface_points"][b].to(self.device)
+
+            # Differentiable BEV projection (Fix 1): connect occupancy to BEV
+            bev_grid = None
+            if surface_points is not None and weights.get("zeta", 0) > 0:
+                means_yup = means[b]  # (G, 3) in Y-up
+                # Y-up (x-right, y-up, z-backward) → Z-up (x-fwd, y-left, z-up)
+                means_zup = torch.stack([
+                    means_yup[:, 0],
+                    -means_yup[:, 2],
+                    means_yup[:, 1],
+                ], dim=-1)
+                from eof3r.src.training.losses import differentiable_bev_projection
+                bev_grid = differentiable_bev_projection(
+                    means_zup=means_zup,
+                    occupancies=pred_occ[b],
+                    bev_resolution=self.config.bev_resolution,
+                    bev_range=self.config.bev_range,
+                    height_range=self.config.bev_height_range,
+                )
 
             # Compute loss for this sample
             sample_losses = compute_total_loss(
@@ -457,12 +558,16 @@ class PhaseBTrainer:
                 occupied_mask=occ_mask,
                 free_mask=free_mask,
                 semantic_labels=sem_labels,
+                bev_grid=bev_grid,
                 **weights,
                 focal_gamma=self.config.focal_gamma,
                 hinge_epsilon=self.config.hinge_epsilon,
                 ssim_weight=self.config.ssim_weight,
                 label_smoothing=self.config.label_smoothing,
                 use_bce=self.config.use_bce,
+                pos_kappa_attract=self.config.pos_kappa_attract,
+                pos_kappa_repel=self.config.pos_kappa_repel,
+                bev_target_coverage=self.config.bev_target_coverage,
             )
 
             # Accumulate
@@ -530,13 +635,52 @@ class PhaseBTrainer:
         scales_flat = scales.reshape(-1, 3)
         rotations_flat = rotations.reshape(-1, 4)
 
-        pred_occ = self.occ_head(means_flat, scales_flat, rotations_flat)
+        # Extract visual features (same as _train_step)
+        visual_features_v = None
+        if "condition_features" in encoder_output:
+            cf = encoder_output["condition_features"]
+            _, C, H_lat, W_lat = cf.shape
+            cf_flat = cf.permute(0, 2, 3, 1).reshape(B * V, H_lat * W_lat, C)
+            visual_features_v = cf_flat.mean(dim=1)
+            visual_features_v = visual_features_v.unsqueeze(1).expand(-1, G // V, -1).reshape(B * G, C)
+
+        if visual_features_v is None:
+            visual_list = []
+            for b in range(B):
+                img = images[b, 0]
+                pose = poses[b, 0]
+                K = intrinsics[b, 0]
+                T_c_w = torch.inverse(pose)
+                R_c_w = T_c_w[:3, :3]
+                t_c_w = T_c_w[:3, 3]
+                means_cam = (R_c_w @ means[b].T).T + t_c_w
+                proj = (K @ means_cam.T).T
+                depths = proj[:, 2].clamp(min=1e-6)
+                uv = proj[:, :2] / depths.unsqueeze(-1)
+                _, H_img, W_img = img.shape
+                uv_norm = torch.stack([
+                    2.0 * uv[:, 0] / (W_img - 1) - 1.0,
+                    2.0 * uv[:, 1] / (H_img - 1) - 1.0,
+                ], dim=-1)
+                img_unsq = img.unsqueeze(0)
+                uv_unsq = uv_norm.unsqueeze(0).unsqueeze(0)
+                rgb_sampled = torch.nn.functional.grid_sample(
+                    img_unsq, uv_unsq, mode='bilinear', padding_mode='border', align_corners=True
+                )
+                rgb_sampled = rgb_sampled.squeeze(0).squeeze(1).T
+                depth_norm = depths / depths.max().clamp(min=1e-6)
+                vis = torch.cat([rgb_sampled, depth_norm.unsqueeze(-1)], dim=-1)
+                visual_list.append(vis)
+            visual_features_v = torch.cat(visual_list, dim=0)
+
+        pred_occ = self.occ_head(means_flat, scales_flat, rotations_flat, visual_features=visual_features_v)
         pred_sem = self.sem_head(means_flat, scales_flat, rotations_flat)
         pred_occ = pred_occ.reshape(B, G)
         pred_sem = pred_sem.reshape(B, G, -1)
 
         total_losses: dict[str, list[Tensor]] = {}
         for b in range(B):
+            # Multi-view labeling (Fix 4)
             if "labels" in batch:
                 labels = batch["labels"]
                 if isinstance(labels, dict):
@@ -552,15 +696,19 @@ class PhaseBTrainer:
                     if sem_labels is not None:
                         sem_labels = sem_labels[b].to(self.device)
             else:
-                vggt_depth = batch["depth"][b, 0].to(self.device)
-                pose = poses[b, 0]
-                K = intrinsics[b, 0]
-                labels_result = label_gaussians_by_vggt_projection(
-                    means_flat[b*G:(b+1)*G],
-                    gaussians.covariances.reshape(-1, 3, 3)[b*G:(b+1)*G],
-                    vggt_depth, pose, K,
-                    kappa=self.config.kappa,
-                )
+                all_labels = []
+                for v_idx in range(V):
+                    vggt_depth = batch["depth"][b, v_idx].to(self.device)
+                    pose = poses[b, v_idx]
+                    K = intrinsics[b, v_idx]
+                    labels_v = label_gaussians_by_vggt_projection(
+                        means_flat[b*G:(b+1)*G],
+                        gaussians.covariances.reshape(-1, 3, 3)[b*G:(b+1)*G],
+                        vggt_depth, pose, K,
+                        kappa=self.config.kappa,
+                    )
+                    all_labels.append(labels_v)
+                labels_result = merge_multi_view_labels(all_labels)
                 occ_mask = labels_result.occupied
                 free_mask = labels_result.free
                 sem_labels = labels_result.semantic_labels
@@ -568,6 +716,22 @@ class PhaseBTrainer:
             surface_points = None
             if "surface_points" in batch:
                 surface_points = batch["surface_points"][b].to(self.device)
+
+            # Differentiable BEV projection (Fix 1)
+            bev_grid_v = None
+            if surface_points is not None and weights.get("zeta", 0) > 0:
+                means_yup = means[b]
+                means_zup = torch.stack([
+                    means_yup[:, 0], -means_yup[:, 2], means_yup[:, 1]
+                ], dim=-1)
+                from eof3r.src.training.losses import differentiable_bev_projection
+                bev_grid_v = differentiable_bev_projection(
+                    means_zup=means_zup,
+                    occupancies=pred_occ[b],
+                    bev_resolution=self.config.bev_resolution,
+                    bev_range=self.config.bev_range,
+                    height_range=self.config.bev_height_range,
+                )
 
             sample_losses = compute_total_loss(
                 gaussian_means=means_flat[b*G:(b+1)*G],
@@ -577,12 +741,16 @@ class PhaseBTrainer:
                 occupied_mask=occ_mask,
                 free_mask=free_mask,
                 semantic_labels=sem_labels,
+                bev_grid=bev_grid_v,
                 **weights,
                 focal_gamma=self.config.focal_gamma,
                 hinge_epsilon=self.config.hinge_epsilon,
                 ssim_weight=self.config.ssim_weight,
                 label_smoothing=self.config.label_smoothing,
                 use_bce=self.config.use_bce,
+                pos_kappa_attract=self.config.pos_kappa_attract,
+                pos_kappa_repel=self.config.pos_kappa_repel,
+                bev_target_coverage=self.config.bev_target_coverage,
             )
 
             for k, v in sample_losses.items():

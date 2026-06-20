@@ -28,6 +28,7 @@ def chamfer_depth_loss(
     gaussian_means: Tensor,
     vggt_points: Tensor,
     occupied_mask: Optional[Tensor] = None,
+    predicted_occupancy: Optional[Tensor] = None,
     max_gaussians: int = 4096,
     max_points: int = 2048,
 ) -> Tensor:
@@ -38,13 +39,18 @@ def chamfer_depth_loss(
 
     Forward term: each VGGT surface point needs at least one Gaussian nearby.
     Backward term: each occupied Gaussian needs to be near some VGGT surface
-    point — penalizes floaters.
+    point — penalizes floaters. When predicted_occupancy is provided, the
+    backward term is occupancy-weighted: high-occupancy Gaussians are pulled
+    harder to surfaces, low-occupancy Gaussians contribute less.
 
     Args:
         gaussian_means: (N, 3) Gaussian center positions in world coords.
         vggt_points: (M, 3) VGGT surface point cloud.
-        occupied_mask: (N,) bool mask for occupied Gaussians. If None, all
-            Gaussians are used in the backward term.
+        occupied_mask: (N,) bool mask for occupied Gaussians. If None and
+            predicted_occupancy is None, all Gaussians are used in backward term.
+        predicted_occupancy: (N,) predicted occupancy values [0,1]. When provided,
+            backward term weights by occupancy (detached to avoid circular gradients).
+            Takes precedence over occupied_mask for weighting.
         max_gaussians: Subsample Gaussians if N exceeds this (for memory).
         max_points: Subsample surface points if M exceeds this (for memory).
 
@@ -59,16 +65,17 @@ def chamfer_depth_loss(
     # Subsample for memory efficiency
     N = gaussian_means.shape[0]
     M = vggt_points.shape[0]
+    device = gaussian_means.device
 
     if M > max_points:
-        idx = torch.randperm(M, device=vggt_points.device)[:max_points]
+        idx = torch.randperm(M, device=device)[:max_points]
         vggt_points = vggt_points[idx]
 
     # Forward: for each VGGT point, find nearest Gaussian
     # Use chunked computation for large N
     if N > max_gaussians:
         # Random subsample of Gaussians for forward term
-        idx = torch.randperm(N, device=gaussian_means.device)[:max_gaussians]
+        idx = torch.randperm(N, device=device)[:max_gaussians]
         means_fwd = gaussian_means[idx]
     else:
         means_fwd = gaussian_means
@@ -79,15 +86,25 @@ def chamfer_depth_loss(
     loss_fwd = min_dist_fwd.mean()
 
     # Backward: for each Gaussian, find nearest VGGT point
-    if occupied_mask is not None:
-        means_bwd = gaussian_means[occupied_mask]
+    # Determine weights and which Gaussians to include
+    if predicted_occupancy is not None:
+        # Occupancy-weighted: use all Gaussians, weight by predicted occupancy
+        # detach() prevents circular gradient: occupancy weights guide Chamfer,
+        # but Chamfer doesn't backprop through occupancy head
+        weights_bwd = predicted_occupancy.detach().clamp(min=0.0)
+        means_bwd = gaussian_means
+    elif occupied_mask is not None:
+        weights_bwd = occupied_mask.float()
+        means_bwd = gaussian_means
     else:
+        weights_bwd = torch.ones(N, device=device)
         means_bwd = gaussian_means
 
-    # Subsample for backward term too
+    # Subsample for backward term
     if means_bwd.shape[0] > max_gaussians:
-        idx = torch.randperm(means_bwd.shape[0], device=means_bwd.device)[:max_gaussians]
+        idx = torch.randperm(means_bwd.shape[0], device=device)[:max_gaussians]
         means_bwd = means_bwd[idx]
+        weights_bwd = weights_bwd[idx]
 
     if means_bwd.shape[0] == 0:
         return loss_fwd
@@ -95,14 +112,220 @@ def chamfer_depth_loss(
     diff_bwd = means_bwd.unsqueeze(1) - vggt_points.unsqueeze(0)  # (|O|', M, 3)
     dist_bwd = (diff_bwd ** 2).sum(dim=-1)  # (|O|', M)
     min_dist_bwd = dist_bwd.min(dim=1).values  # (|O|',)
-    loss_bwd = min_dist_bwd.mean()
+
+    # Weighted mean: high-occupancy Gaussians penalized more for being far
+    weight_sum = weights_bwd.sum().clamp(min=1)
+    loss_bwd = (min_dist_bwd * weights_bwd).sum() / weight_sum
 
     return loss_fwd + loss_bwd
 
 
 # ---------------------------------------------------------------------------
-# L_occ: Focal Loss for Occupancy Classification
+# L_position: Occupancy-Guided Position Loss
 # ---------------------------------------------------------------------------
+
+def occupancy_guided_position_loss(
+    gaussian_means: Tensor,
+    predicted_occupancy: Tensor,
+    vggt_points: Tensor,
+    kappa_attract: float = 1.0,
+    kappa_repel: float = 0.1,
+    free_surface_margin: float = 0.1,
+    max_gaussians: int = 4096,
+    max_points: int = 2048,
+) -> Tensor:
+    """Directly move Gaussians based on occupancy predictions.
+
+    Provides a DIRECT gradient path from occupancy to positions, bypassing
+    the MLP bottleneck in the occupancy head.
+
+    - High-occupancy Gaussians (occ > 0.5): attracted toward nearest VGGT
+      surface point — penalizes distance to surface.
+    - Low-occupancy Gaussians (occ ≤ 0.5): repelled from VGGT surface —
+      only penalized if TOO close to surface (within free_surface_margin).
+
+    The key insight: instead of asking occupancy loss to move positions
+    through the thin MLP, we compute position targets based on occupancy
+    predictions and compare current positions to those targets directly.
+
+    Uses detach() on occupancy threshold to avoid circular gradients:
+    the occupancy value determines WHICH Gaussians are attracted/repelled,
+    but the position gradient goes directly to means (not through occ head).
+
+    Args:
+        gaussian_means: (N, 3) Gaussian center positions.
+        predicted_occupancy: (N,) predicted occupancy values [0, 1].
+        vggt_points: (M, 3) VGGT surface points.
+        kappa_attract: Weight for attraction term (occupied → surface).
+        kappa_repel: Weight for repulsion term (free → away from surface).
+        free_surface_margin: Minimum distance free Gaussians must maintain
+            from surfaces (meters). Closer Gaussians are repelled.
+        max_gaussians: Subsample Gaussians for memory.
+        max_points: Subsample surface points for memory.
+
+    Returns:
+        Scalar position guidance loss.
+    """
+    N = gaussian_means.shape[0]
+    M = vggt_points.shape[0]
+    device = gaussian_means.device
+
+    # Subsample surface points for memory
+    if M > max_points:
+        idx = torch.randperm(M, device=device)[:max_points]
+        pts = vggt_points[idx]
+    else:
+        pts = vggt_points
+
+    # Hard assignment based on occupancy threshold
+    # detach() so occupancy only determines grouping, not gradient source
+    occ_mask = (predicted_occupancy > 0.5).detach()
+    free_mask = ~occ_mask
+
+    loss = torch.tensor(0.0, device=device)
+
+    # Occupied term: attract to nearest surface point
+    if occ_mask.any() and kappa_attract > 0:
+        means_occ = gaussian_means[occ_mask]
+        if means_occ.shape[0] > max_gaussians:
+            idx = torch.randperm(means_occ.shape[0], device=device)[:max_gaussians]
+            means_occ = means_occ[idx]
+
+        # Pairwise distances: (|O|, M)
+        dists_occ = torch.cdist(means_occ, pts, p=2.0)  # L2 distance
+        min_dists = dists_occ.min(dim=1).values  # (|O|,)
+        loss = loss + kappa_attract * min_dists.mean()
+
+    # Free term: repel Gaussians that are too close to surfaces
+    if free_mask.any() and kappa_repel > 0:
+        means_free = gaussian_means[free_mask]
+        if means_free.shape[0] > max_gaussians:
+            idx = torch.randperm(means_free.shape[0], device=device)[:max_gaussians]
+            means_free = means_free[idx]
+
+        dists_free = torch.cdist(means_free, pts, p=2.0)  # (|F|, M)
+        min_dists = dists_free.min(dim=1).values  # (|F|,)
+
+        # Hinge: only penalize if closer than margin to surface
+        violation = torch.clamp(free_surface_margin - min_dists, min=0.0)
+        loss = loss + kappa_repel * violation.mean()
+
+    return loss
+
+
+# ---------------------------------------------------------------------------
+# L_bev: BEV Coverage Loss (differentiable)
+# ---------------------------------------------------------------------------
+
+def bev_coverage_loss(
+    bev_grid: Tensor,
+    target_coverage: float = 0.10,
+    threshold: float = 0.3,
+) -> Tensor:
+    """Penalize low BEV coverage — encourages occupied Gaussians to spread.
+
+    Provides direct gradient signal: if BEV is too empty, move Gaussians
+    to produce coverage. This connects the BEV output back to Gaussian
+    positions through the differentiable BEV projection.
+
+    L_bev = max(0, target_coverage - actual_coverage)²
+
+    Args:
+        bev_grid: (H, W) BEV occupancy grid with values in [0, 1].
+        target_coverage: Minimum desired coverage fraction.
+        threshold: Occupancy threshold for "occupied" cells.
+
+    Returns:
+        Scalar coverage loss (0 if coverage ≥ target).
+    """
+    actual = (bev_grid > threshold).float().mean()
+    shortfall = torch.clamp(target_coverage - actual, min=0.0)
+    return shortfall ** 2
+
+
+# ---------------------------------------------------------------------------
+# Differentiable BEV Projection (torch-based, for training)
+# ---------------------------------------------------------------------------
+
+def differentiable_bev_projection(
+    means_zup: Tensor,
+    occupancies: Tensor,
+    bev_resolution: float = 0.05,
+    bev_range: tuple[float, float, float, float] = (-10.0, -10.0, 10.0, 10.0),
+    height_range: tuple[float, float] = (-0.5, 2.0),
+    gaussian_sigma_cells: float = 2.0,
+) -> Tensor:
+    """Torch-differentiable BEV projection for training.
+
+    Projects 3D Gaussians to a 2D BEV grid using their occupancy values.
+    Fully differentiable — gradients flow from BEV back to occupancy
+    values and Gaussian positions.
+
+    Uses a soft scatter with Gaussian kernel falloff per cell, enabling
+    gradient propagation through the grid.
+
+    Args:
+        means_zup: (N, 3) Gaussian centers in Z-up coords (X-fwd, Y-left, Z-up).
+        occupancies: (N,) predicted occupancy values [0, 1].
+        bev_resolution: Meters per grid cell.
+        bev_range: (x_min, y_min, x_max, y_max) in meters.
+        height_range: (z_min, z_max) height filter in Z-up.
+        gaussian_sigma_cells: Sigma of Gaussian kernel in cell units for
+            per-point smoothing (replaces the fixed global sigma).
+
+    Returns:
+        (H, W) BEV occupancy grid [0, 1], differentiable.
+    """
+    x_min, y_min, x_max, y_max = bev_range
+    z_min, z_max = height_range
+
+    # Height filter
+    z = means_zup[:, 2]
+    height_mask = (z >= z_min) & (z <= z_max)
+    m = means_zup[height_mask]
+    o = occupancies[height_mask]
+
+    if m.shape[0] == 0:
+        H = int((y_max - y_min) / bev_resolution)
+        W = int((x_max - x_min) / bev_resolution)
+        return torch.zeros(H, W, device=means_zup.device, dtype=means_zup.dtype)
+
+    # Map to grid cell indices (continuous, for soft assignment)
+    x_cells = (m[:, 0] - x_min) / bev_resolution  # (N',)
+    y_cells = (m[:, 1] - y_min) / bev_resolution  # (N',)
+
+    H = int((y_max - y_min) / bev_resolution)
+    W = int((x_max - x_min) / bev_resolution)
+
+    # Create grid of cell centers
+    device = means_zup.device
+    dtype = means_zup.dtype
+    gy = torch.arange(H, device=device, dtype=dtype)  # (H,)
+    gx = torch.arange(W, device=device, dtype=dtype)  # (W,)
+
+    # For each Gaussian, compute soft weight to each nearby cell
+    # Use a Gaussian kernel: w_ij = exp(-dist² / (2·σ²))
+    sigma2 = 2.0 * gaussian_sigma_cells ** 2
+
+    # Expand for pairwise computation: (N', H, W)
+    dy = y_cells.unsqueeze(-1).unsqueeze(-1) - gy.unsqueeze(0).unsqueeze(-1)  # (N', H, 1)
+    dx = x_cells.unsqueeze(-1).unsqueeze(-1) - gx.unsqueeze(0).unsqueeze(0)  # (N', 1, W)
+    dist2 = dy.pow(2) + dx.pow(2)  # (N', H, W)
+
+    # Truncate beyond 3·sigma
+    max_dist2 = (3.0 * gaussian_sigma_cells) ** 2
+    weight = torch.exp(-dist2 / sigma2)  # (N', H, W)
+    weight = weight * (dist2 <= max_dist2)  # truncate
+
+    # Weighted sum: each Gaussian contributes occupancy × weight
+    weighted_occ = o.unsqueeze(-1).unsqueeze(-1) * weight  # (N', H, W)
+    bev = weighted_occ.sum(dim=0)  # (H, W)
+
+    # Normalize: soft count of Gaussians per cell (prevent over-saturation)
+    count = weight.sum(dim=0).clamp(min=1.0)  # (H, W)
+    bev = bev / count
+
+    return bev.clamp(0.0, 1.0)
 
 def focal_occupancy_loss(
     predicted_occupancy: Tensor,
@@ -340,22 +563,37 @@ def compute_total_loss(
     # Rendered images (auxiliary)
     rendered_images: Optional[Tensor] = None,
     gt_images: Optional[Tensor] = None,
+    # BEV grid (from differentiable projection)
+    bev_grid: Optional[Tensor] = None,
     # Stage weights
     alpha: float = 1.0,
     beta: float = 1.0,
     gamma: float = 1.0,
     delta: float = 0.3,
     eta: float = 0.1,
+    theta: float = 0.0,
+    zeta: float = 0.0,
     # Loss hyperparameters
     focal_gamma: float = 2.0,
     hinge_epsilon: float = 0.05,
     ssim_weight: float = 0.2,
     label_smoothing: float = 0.0,
     use_bce: bool = False,
+    # Position loss hyperparameters
+    pos_kappa_attract: float = 1.0,
+    pos_kappa_repel: float = 0.1,
+    # BEV loss hyperparameters
+    bev_target_coverage: float = 0.10,
 ) -> dict[str, Tensor]:
     """Compute total loss with per-component breakdown.
 
-    L_total = α·L_depth + β·L_occ + γ·L_free + δ·L_sem + η·L_color
+    Extended loss:
+        L_total = α·L_depth + β·L_occ + γ·L_free + δ·L_sem + η·L_color
+                + θ·L_position + ζ·L_bev
+
+    Where:
+        L_position: Occupancy-guided position loss (direct gradient path)
+        L_bev: BEV coverage loss (connects BEV quality to occupancy)
 
     Args:
         gaussian_means: (N, 3) Gaussian centers.
@@ -367,11 +605,18 @@ def compute_total_loss(
         semantic_labels: (N,) integer semantic labels.
         rendered_images: (B, 3, H, W) rendered images.
         gt_images: (B, 3, H, W) ground truth images.
-        alpha, beta, gamma, delta, eta: Loss weights per stage.
+        bev_grid: (H, W) differentiable BEV grid from bev_projection.
+        alpha, beta, gamma, delta, eta: Classic loss weights per stage.
+        theta: Weight for occupancy-guided position loss (L_position).
+        zeta: Weight for BEV coverage loss (L_bev).
         focal_gamma: Focal loss γ parameter.
         hinge_epsilon: Hinge loss ε threshold.
         ssim_weight: SSIM term weight in color loss.
         label_smoothing: Label smoothing for semantic CE.
+        use_bce: Use BCE instead of focal loss for occupancy.
+        pos_kappa_attract: Attraction weight for position loss.
+        pos_kappa_repel: Repulsion weight for position loss.
+        bev_target_coverage: Target BEV coverage fraction.
 
     Returns:
         Dict with 'total' and individual loss components.
@@ -379,9 +624,12 @@ def compute_total_loss(
     losses = {}
     total = torch.tensor(0.0, device=gaussian_means.device)
 
-    # L_depth: Chamfer distance
+    # L_depth: Chamfer distance (now occupancy-weighted)
     if vggt_points is not None and alpha > 0:
-        l_depth = chamfer_depth_loss(gaussian_means, vggt_points, occupied_mask)
+        l_depth = chamfer_depth_loss(
+            gaussian_means, vggt_points, occupied_mask,
+            predicted_occupancy=predicted_occupancy,
+        )
         losses["depth"] = l_depth
         total = total + alpha * l_depth
 
@@ -412,6 +660,16 @@ def compute_total_loss(
         losses["free_space"] = l_free
         total = total + gamma * l_free
 
+    # L_position: Occupancy-guided position loss (direct gradient path)
+    if vggt_points is not None and theta > 0:
+        l_position = occupancy_guided_position_loss(
+            gaussian_means, predicted_occupancy, vggt_points,
+            kappa_attract=pos_kappa_attract,
+            kappa_repel=pos_kappa_repel,
+        )
+        losses["position"] = l_position
+        total = total + theta * l_position
+
     # L_semantic: Semantic cross-entropy
     if (
         semantic_logits is not None
@@ -425,6 +683,12 @@ def compute_total_loss(
         )
         losses["semantic"] = l_sem
         total = total + delta * l_sem
+
+    # L_bev: BEV coverage loss
+    if bev_grid is not None and zeta > 0:
+        l_bev = bev_coverage_loss(bev_grid, target_coverage=bev_target_coverage)
+        losses["bev"] = l_bev
+        total = total + zeta * l_bev
 
     # L_color: Auxiliary photometric loss
     if rendered_images is not None and gt_images is not None and eta > 0:
@@ -447,6 +711,8 @@ STAGE_SCHEDULE = {
         "gamma": 0.1,
         "delta": 0.0,
         "eta": 0.3,
+        "theta": 0.5,
+        "zeta": 0.3,
     },
     2: {  # Main (~50% iterations): occupancy + free-space + semantics
         "alpha": 0.5,
@@ -454,6 +720,8 @@ STAGE_SCHEDULE = {
         "gamma": 0.5,
         "delta": 0.3,
         "eta": 0.1,
+        "theta": 0.3,
+        "zeta": 0.1,
     },
     3: {  # Fine-tune (~20% iterations): refine, color exits
         "alpha": 0.3,
@@ -461,6 +729,8 @@ STAGE_SCHEDULE = {
         "gamma": 1.0,
         "delta": 0.5,
         "eta": 0.05,
+        "theta": 0.1,
+        "zeta": 0.05,
     },
 }
 

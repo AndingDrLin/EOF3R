@@ -107,21 +107,26 @@ def evaluate_checkpoint(
         # Occupancy head predictions
         pred_occ = occ_head(means, scales, rotations)  # (G,)
 
-        # Label Gaussians using VGGT supervision (first view)
-        depth = sample["depth"][0].to(device)  # (H, W)
-        pose = poses[0, 0]  # (4, 4)
-        K = intrinsics[0, 0]  # (3, 3)
-
-        # Build covariance from scales and rotations
+        # Build covariance from scales for labeling
         G = means.shape[0]
         cov = torch.zeros(G, 3, 3, device=device)
         cov[:, 0, 0] = scales[:, 0] ** 2
         cov[:, 1, 1] = scales[:, 1] ** 2
         cov[:, 2, 2] = scales[:, 2] ** 2
 
-        labels = label_gaussians_by_vggt_projection(
-            means, cov, depth, pose, K, kappa=3.0,
-        )
+        # Multi-view labeling (Fix 4): use ALL camera views
+        from eof3r.src.training.supervision import merge_multi_view_labels
+        all_labels = []
+        for v_idx in range(V):
+            depth_v = sample["depth"][v_idx].to(device)
+            pose_v = poses[0, v_idx]
+            K_v = intrinsics[0, v_idx]
+
+            labels_v = label_gaussians_by_vggt_projection(
+                means, cov, depth_v, pose_v, K_v, kappa=3.0,
+            )
+            all_labels.append(labels_v)
+        labels = merge_multi_view_labels(all_labels)
 
         # 1. Gaussian-surface distance (subsampled Chamfer)
         n_points = min(surface_points.shape[0], 2048)
@@ -148,25 +153,25 @@ def evaluate_checkpoint(
             occ_precision = 0.0
             occ_recall = 0.0
 
-        # 3. BEV coverage (simple XY projection)
-        bev_resolution = 100
-        xy = means[:, [0, 2]]  # (G, 2) — X and Z in Y-up
-        occ_mask = pred_occ > 0.3
-        if occ_mask.any():
-            xy_occ = xy[occ_mask]
-            # Normalize to [0, 1]
-            xy_min = xy_occ.min(dim=0).values
-            xy_max = xy_occ.max(dim=0).values
-            xy_range = (xy_max - xy_min).clamp(min=1e-6)
-            xy_norm = (xy_occ - xy_min) / xy_range
-            # Bin to grid
-            grid_x = (xy_norm[:, 0] * (bev_resolution - 1)).long().clamp(0, bev_resolution - 1)
-            grid_y = (xy_norm[:, 1] * (bev_resolution - 1)).long().clamp(0, bev_resolution - 1)
-            bev_grid = torch.zeros(bev_resolution, bev_resolution, device=device)
-            bev_grid[grid_x, grid_y] = 1.0
-            bev_coverage = bev_grid.sum().item() / (bev_resolution * bev_resolution)
-        else:
-            bev_coverage = 0.0
+        # 3. BEV coverage using actual BEV projector with predicted occupancy (Fix 7)
+        # Convert to numpy for BEVProjector
+        means_np = means.cpu().numpy()
+        pred_occ_np = pred_occ.cpu().numpy()
+        scales_np = scales.cpu().numpy()
+
+        from eof3r.src.fusion.bev_projector import BEVProjector
+        bev_proj = BEVProjector(config={
+            "bev_resolution": 0.05,
+            "bev_range": "auto",
+            "height_filter": (-0.5, 2.0),
+            "alpha_threshold": 0.3,
+        })
+        # Pre-compute bounds from points for proper grid sizing
+        bev_proj.set_bounds_from_points(fg_means_yup=means_np)
+        bev_grid_np = bev_proj.project_gaussians_to_bev(
+            means_np, None, scales=scales_np, occupancies=pred_occ_np,
+        )
+        bev_coverage = float((bev_grid_np > 0.3).sum()) / max(bev_grid_np.size, 1)
 
         # 4. Label distribution
         n_total = G

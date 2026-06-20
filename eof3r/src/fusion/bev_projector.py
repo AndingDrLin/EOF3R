@@ -71,15 +71,19 @@ class BEVProjector:
         scales: np.ndarray | None = None,
         covariances: np.ndarray | None = None,
         config: dict | None = None,
+        occupancies: np.ndarray | None = None,
     ) -> np.ndarray:
         """Project foreground Gaussians to BEV occupancy grid.
 
         Args:
             means: (N, 3) Gaussian centers in Y-up (x-right, y-up, z-backward).
-            opacities: (N,) opacity values [0, 1].
+            opacities: (N,) opacity values [0, 1]. Used only if occupancies is None.
             scales: (N, 3) scale per axis (Y-up). If None, uses fixed 0.05.
             covariances: (N, 3, 3) covariances (Y-up). If None, derived from scales.
             config: Optional overrides (same keys as __init__ config).
+            occupancies: (N,) predicted occupancy values [0, 1] from occupancy head.
+                When provided, REPLACES opacities for BEV occupancy computation.
+                This connects the trained occupancy head to BEV output (Fix 1a).
 
         Returns:
             (H, W) float32 BEV occupancy grid in Z-up (X-forward, Y-left).
@@ -100,7 +104,8 @@ class BEVProjector:
         z = means_zup[:, 2]
         mask = (z >= self._height_range[0]) & (z <= self._height_range[1])
         m = means_zup[mask]
-        o = opacities[mask]
+        # Use predicted occupancy if provided, otherwise fall back to opacity
+        o = occupancies[mask] if occupancies is not None else opacities[mask]
         s = scales_zup[mask]
 
         # Auto-compute BEV bounds from data if configured AND not already set.

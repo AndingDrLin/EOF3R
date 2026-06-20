@@ -155,12 +155,12 @@ def label_gaussians_by_vggt_projection(
     # Δd_i = μ̃_i^z - D^vggt(u_i, v_i)
     delta_d = valid_depth - vggt_d  # (|valid|,)
 
-    # σ_i = κ · max_eig(Σ_i)
-    # For efficiency, use max of diagonal as proxy for max eigenvalue
+    # σ_i = κ · sqrt(max_eig(Σ_i))
+    # Use eigvalsh for proper eigenvalue computation (3x3 is cheap)
     valid_cov = gaussian_covariances[valid_idx]  # (|valid|, 3, 3)
-    # max eigenvalue ≈ max diagonal for positive semi-definite matrices
-    max_diag = valid_cov.diagonal(dim1=-2, dim2=-1).max(dim=-1).values  # (|valid|,)
-    sigma = kappa * max_diag.clamp(min=1e-6)
+    eigvals = torch.linalg.eigvalsh(valid_cov)  # (|valid|, 3), ascending
+    max_eig = eigvals[:, -1]  # (|valid|,) — largest eigenvalue = variance along major axis
+    sigma = kappa * torch.sqrt(max_eig.clamp(min=1e-12))
 
     # Step 5: Apply labeling rules
     # y_i = 1 (OCCUPIED)   if |Δd_i| ≤ σ_i

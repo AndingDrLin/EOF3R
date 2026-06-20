@@ -18,6 +18,9 @@ from eof3r.src.training.losses import (
     semantic_cross_entropy_loss,
     color_reconstruction_loss,
     compute_total_loss,
+    occupancy_guided_position_loss,
+    bev_coverage_loss,
+    differentiable_bev_projection,
 )
 from eof3r.src.training.heads import OccupancyHead, SemanticHead
 from eof3r.src.training.supervision import label_gaussians_by_vggt_projection
@@ -29,6 +32,9 @@ __all__ = [
     "semantic_cross_entropy_loss",
     "color_reconstruction_loss",
     "compute_total_loss",
+    "occupancy_guided_position_loss",
+    "bev_coverage_loss",
+    "differentiable_bev_projection",
     "OccupancyHead",
     "SemanticHead",
     "label_gaussians_by_vggt_projection",

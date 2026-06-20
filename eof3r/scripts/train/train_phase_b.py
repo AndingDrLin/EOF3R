@@ -128,6 +128,8 @@ def create_heads(config: PhaseBConfig):
         input_dim=10,  # 3 means + 3 scales + 4 rotation
         hidden_dims=config.occ_hidden_dims,
         dropout=0.1,
+        use_visual_features=True,  # Fix 2: gated fusion with visual features
+        visual_feature_dim=4,  # RGB + depth from image projection
     )
 
     sem_head = SemanticHead(
@@ -291,6 +293,14 @@ def main():
         "--eta", type=float, default=None, help="Override L_color weight (auxiliary)"
     )
     parser.add_argument(
+        "--theta", type=float, default=None,
+        help="Override L_position weight (occupancy-guided position loss)",
+    )
+    parser.add_argument(
+        "--zeta", type=float, default=None,
+        help="Override L_bev weight (BEV coverage loss)",
+    )
+    parser.add_argument(
         "--uniform-weights",
         action="store_true",
         help="Use uniform loss weights across all stages (no stage schedule)",
@@ -367,6 +377,10 @@ def main():
         loss_overrides["delta"] = args.delta
     if args.eta is not None:
         loss_overrides["eta"] = args.eta
+    if args.theta is not None:
+        loss_overrides["theta"] = args.theta
+    if args.zeta is not None:
+        loss_overrides["zeta"] = args.zeta
 
     if args.use_bce:
         config.use_bce = True
@@ -385,6 +399,8 @@ def main():
                 "gamma": args.gamma if args.gamma is not None else 1.0,
                 "delta": args.delta if args.delta is not None else 0.3,
                 "eta": args.eta if args.eta is not None else 0.1,
+                "theta": args.theta if args.theta is not None else 0.5,
+                "zeta": args.zeta if args.zeta is not None else 0.3,
             }
             config.stage_weights = {1: base_weights, 2: base_weights, 3: base_weights}
             logger.info(f"Uniform weights across all stages: {base_weights}")

@@ -27,10 +27,13 @@ class OccupancyHead(nn.Module):
         - Gaussian means (3)
         - Gaussian scales (3)
         - Gaussian rotations (4, quaternion)
+        - Optional: visual features from encoder (D_vis)
         - Optional: identity encoding (D_id)
 
-    Output:
-        - Occupancy probability in [0, 1] via sigmoid
+    When visual_features is provided, uses a gated fusion mechanism to
+    blend geometric and visual information. This lets the head distinguish
+    "Gaussian on a real surface" from "Gaussian in empty air" — fixing
+    the high-recall/low-precision problem.
 
     Phase A.1 POC showed that post-hoc MLP on frozen Gaussians fails (2.6%
     near surface). This head must be trained end-to-end with Gaussian
@@ -42,21 +45,43 @@ class OccupancyHead(nn.Module):
         input_dim: int = 10,
         hidden_dims: list[int] | None = None,
         dropout: float = 0.1,
+        use_visual_features: bool = True,
+        visual_feature_dim: int = 128,
     ):
         """Initialize occupancy head.
 
         Args:
-            input_dim: Input feature dimension. Default 10 (3 means + 3 scales + 4 rotation).
+            input_dim: Input feature dimension for geometric features.
+                Default 10 (3 means + 3 scales + 4 rotation).
             hidden_dims: Hidden layer dimensions. Default [64, 32].
             dropout: Dropout rate for regularization.
+            use_visual_features: Whether to accept visual features.
+                When True and visual_features is passed to forward(),
+                uses gated fusion. When False, pure geometric MLP.
+            visual_feature_dim: Dimensionality of visual features.
         """
         super().__init__()
 
         if hidden_dims is None:
             hidden_dims = [64, 32]
 
+        self.use_visual_features = use_visual_features
+
+        if use_visual_features:
+            # Project visual features to same dim as geometric for fusion
+            self.visual_proj = nn.Sequential(
+                nn.Linear(visual_feature_dim, input_dim),
+                nn.LayerNorm(input_dim),
+                nn.GELU(),
+            )
+            # Gated fusion: learned blend of geometric + visual features
+            self.fusion_gate = nn.Sequential(
+                nn.Linear(input_dim * 2, input_dim),
+                nn.Sigmoid(),
+            )
+
         layers = []
-        in_dim = input_dim
+        in_dim = input_dim if not use_visual_features else input_dim
         for h_dim in hidden_dims:
             layers.extend([
                 nn.Linear(in_dim, h_dim),
@@ -81,6 +106,7 @@ class OccupancyHead(nn.Module):
         scales: Tensor,
         rotations: Tensor,
         extra_features: Optional[Tensor] = None,
+        visual_features: Optional[Tensor] = None,
     ) -> Tensor:
         """Predict occupancy probability for each Gaussian.
 
@@ -89,15 +115,27 @@ class OccupancyHead(nn.Module):
             scales: (N, 3) Gaussian scales.
             rotations: (N, 4) Gaussian rotations (quaternion).
             extra_features: (N, D) optional additional features.
+            visual_features: (N, D_vis) optional visual features from
+                encoder (e.g., image features at projected pixel).
+                When provided and use_visual_features=True, gated fusion
+                blends geometric and visual information.
 
         Returns:
             (N,) occupancy probabilities in [0, 1].
         """
         # Concatenate Gaussian parameters
-        features = torch.cat([means, scales, rotations], dim=-1)  # (N, 10)
+        geo_features = torch.cat([means, scales, rotations], dim=-1)  # (N, 10)
 
-        if extra_features is not None:
-            features = torch.cat([features, extra_features], dim=-1)
+        if self.use_visual_features and visual_features is not None:
+            # Project visual features and fuse with geometric
+            vis_proj = self.visual_proj(visual_features)  # (N, input_dim)
+            gate_input = torch.cat([geo_features, vis_proj], dim=-1)  # (N, 2*input_dim)
+            gate = self.fusion_gate(gate_input)  # (N, input_dim)
+            features = gate * geo_features + (1 - gate) * vis_proj
+        elif extra_features is not None:
+            features = torch.cat([geo_features, extra_features], dim=-1)
+        else:
+            features = geo_features
 
         # MLP predicts logit
         logit = self.mlp(features).squeeze(-1)  # (N,)

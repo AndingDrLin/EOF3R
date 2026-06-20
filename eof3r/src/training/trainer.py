@@ -697,18 +697,22 @@ class PhaseBTrainer:
 
     def _load_checkpoint(self, path: str) -> None:
         """Resume from checkpoint."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         self.encoder.load_state_dict(checkpoint["encoder"])
         self.occ_head.load_state_dict(checkpoint["occ_head"])
         self.sem_head.load_state_dict(checkpoint["sem_head"])
-        self.optimizer.load_state_dict(checkpoint["optimizer"])
-        self.scheduler.load_state_dict(checkpoint["scheduler"])
+
+        # Load optimizer state (skip scheduler — it may have different total_steps)
+        try:
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        except Exception as e:
+            logger.warning(f"Could not load optimizer state: {e}. Using fresh optimizer.")
 
         state = checkpoint["state"]
-        self.state.global_step = state["global_step"]
-        self.state.epoch = state["epoch"]
+        self.state.global_step = 0  # Reset step counter for new training run
+        self.state.epoch = 0
         self.state.best_metric = state["best_metric"]
-        self.state.stage = state["stage"]
+        self.state.stage = 1  # Reset to stage 1
 
-        logger.info(f"Resumed from {path} at step {self.state.global_step}")
+        logger.info(f"Resumed model weights from {path} (previous step: {state['global_step']})")

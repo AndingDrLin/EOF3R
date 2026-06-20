@@ -312,6 +312,11 @@ def main():
         default=None,
         help="Path to pre-computed VGGT supervision directory (contains manifest.txt)",
     )
+    parser.add_argument(
+        "--freeze-encoder",
+        action="store_true",
+        help="Freeze encoder, only train occupancy/semantic heads",
+    )
     args = parser.parse_args()
 
     # Build config
@@ -431,6 +436,12 @@ def main():
         config=config,
         device=args.device,
     )
+
+    # Freeze encoder if requested
+    if args.freeze_encoder:
+        for param in trainer.encoder.parameters():
+            param.requires_grad = False
+        logger.info("Encoder frozen — only training heads")
 
     # Start training
     logger.info("Starting Phase B training...")
